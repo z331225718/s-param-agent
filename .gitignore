@@ -1,0 +1,6 @@
+.env
+config.json
+lessons.json
+__pycache__/
+*.pyc
+demo_output/

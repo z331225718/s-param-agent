@@ -1,0 +1,707 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>S-Parameter Dashboard</title>
+<script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
+<style>
+  :root {
+    --bg: #0f0f1a;
+    --panel: #1a1a2e;
+    --border: #2a2a4a;
+    --text: #c0c0c0;
+    --accent: #00d4aa;
+    --accent2: #4da6ff;
+    --danger: #ff4d6a;
+    --hover: #25254a;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body {
+    font-family: -apple-system, 'Segoe UI', sans-serif;
+    background: var(--bg); color: var(--text);
+    height: 100vh; overflow: hidden;
+    display: flex;
+  }
+
+  /* ── 左侧面板 ── */
+  #sidebar {
+    width: 380px; min-width: 380px;
+    background: var(--panel); border-right: 1px solid var(--border);
+    display: flex; flex-direction: column;
+    overflow-y: auto;
+  }
+  #sidebar h1 {
+    font-size: 1.2rem; padding: 18px 20px;
+    background: linear-gradient(135deg, var(--accent), var(--accent2));
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    background-clip: text;
+    border-bottom: 1px solid var(--border);
+    letter-spacing: 0.5px;
+  }
+  .section {
+    padding: 14px 20px; border-bottom: 1px solid var(--border);
+  }
+  .section h3 {
+    font-size: 0.8rem; text-transform: uppercase;
+    letter-spacing: 1px; color: #777; margin-bottom: 10px;
+  }
+
+  /* 上传区域 */
+  #dropzone {
+    border: 2px dashed var(--border); border-radius: 8px;
+    padding: 24px; text-align: center;
+    transition: all 0.2s; cursor: pointer;
+  }
+  #dropzone:hover, #dropzone.drag { border-color: var(--accent); background: var(--hover); }
+  #dropzone p { font-size: 0.85rem; color: #777; }
+  #dropzone .icon { font-size: 2rem; margin-bottom: 6px; }
+
+  /* 文件列表 */
+  .file-card {
+    background: #12122a; border: 1px solid var(--border);
+    border-radius: 6px; padding: 10px 12px; margin-bottom: 8px;
+    display: flex; justify-content: space-between; align-items: center;
+    font-size: 0.85rem;
+  }
+  .file-card .info { flex:1; }
+  .file-card .name { color: var(--accent); font-weight: 600; }
+  .file-card .meta { color: #777; font-size: 0.75rem; margin-top: 2px; }
+  .file-card .remove {
+    background: none; border: none; color: var(--danger);
+    cursor: pointer; font-size: 1.1rem; padding: 4px 8px;
+  }
+  .file-card.selected { border-color: var(--accent); }
+
+  /* 控件 */
+  select, button, .param-tag {
+    background: #12122a; color: var(--text);
+    border: 1px solid var(--border); border-radius: 5px;
+    padding: 8px 12px; font-size: 0.85rem;
+  }
+  button {
+    cursor: pointer; transition: all 0.15s;
+  }
+  button:hover { background: var(--hover); border-color: var(--accent); }
+  button.primary {
+    background: linear-gradient(135deg, #007d66, #0088cc);
+    border: none; color: #fff; font-weight: 600;
+  }
+  button.primary:hover { opacity: 0.9; }
+
+  .param-tags { display: flex; flex-wrap: wrap; gap: 6px; }
+  .param-tag {
+    cursor: pointer; font-size: 0.78rem; padding: 4px 10px;
+    user-select: none;
+  }
+  .param-tag.active { border-color: var(--accent); background: #1a3a30; color: var(--accent); }
+
+  .chart-type-tabs { display: flex; gap: 4px; flex-wrap: wrap; }
+  .chart-type-tab {
+    padding: 6px 14px; border-radius: 4px; cursor: pointer;
+    font-size: 0.8rem; border: 1px solid var(--border);
+    transition: all 0.15s;
+  }
+  .chart-type-tab.active { background: var(--accent); color: #000; border-color: var(--accent); font-weight: 600; }
+
+  /* 频率输入 */
+  .freq-row { display: flex; gap: 8px; align-items: center; }
+  .freq-row input {
+    width: 90px; background: #12122a; border: 1px solid var(--border);
+    color: var(--text); padding: 6px 10px; border-radius: 4px; font-size: 0.85rem;
+  }
+
+  /* 操作按钮行 */
+  .action-row { display: flex; gap: 8px; flex-wrap: wrap; }
+
+  /* ── 右侧图表区 ── */
+  #main {
+    flex: 1; display: flex; flex-direction: column;
+  }
+  #toolbar {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 12px 20px; border-bottom: 1px solid var(--border);
+    background: var(--panel);
+  }
+  #toolbar h2 { font-size: 1rem; color: var(--accent); }
+  #chart-area { flex: 1; position: relative; }
+  #chart { width: 100%; height: 100%; }
+  #placeholder {
+    position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%);
+    text-align: center; color: #444;
+  }
+  #placeholder .icon { font-size: 4rem; margin-bottom: 12px; }
+
+  /* 级联模态框 */
+  .modal-overlay {
+    position: fixed; top:0;left:0;right:0;bottom:0;
+    background: rgba(0,0,0,0.6); display: flex;
+    align-items: center; justify-content: center; z-index: 100;
+  }
+  .modal {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 10px; padding: 24px; min-width: 360px;
+  }
+  .modal h3 { margin-bottom: 14px; }
+  .modal select { width: 100%; margin-bottom: 10px; }
+  .modal .btn-row { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
+
+  /* Toast */
+  #toast {
+    position: fixed; bottom: 20px; right: 20px;
+    background: var(--accent); color: #000; padding: 10px 20px;
+    border-radius: 6px; font-weight: 600; font-size: 0.85rem;
+    opacity: 0; transition: opacity 0.3s; z-index: 200;
+  }
+  #toast.show { opacity: 1; }
+  #toast.error { background: var(--danger); color: #fff; }
+
+  /* ── Chat Panel ── */
+  #chat-panel {
+    border-top: 1px solid var(--border);
+    background: #0c0c1e;
+    display: flex; flex-direction: column;
+    min-height: 0;
+  }
+  #chat-messages {
+    flex: 1; overflow-y: auto; padding: 10px 16px;
+    max-height: 200px; font-size: 0.82rem;
+    display: flex; flex-direction: column; gap: 6px;
+  }
+  .chat-msg {
+    padding: 6px 12px; border-radius: 8px;
+    max-width: 85%; line-height: 1.45;
+    white-space: pre-wrap; word-break: break-word;
+  }
+  .chat-msg.user {
+    align-self: flex-end;
+    background: var(--accent); color: #000;
+  }
+  .chat-msg.agent {
+    align-self: flex-start;
+    background: #1a1a3e; border: 1px solid var(--border);
+  }
+  .chat-msg.error {
+    align-self: flex-start;
+    background: #3e1a1a; border: 1px solid var(--danger);
+    color: #ff8888;
+  }
+  .chat-msg.code {
+    align-self: flex-start; width: 95%;
+    background: #0d1117; border: 1px solid #30363d;
+    color: #c9d1d9; font-family: 'Consolas', 'Courier New', monospace;
+    font-size: 0.75rem; max-height: 180px; overflow-y: auto;
+    white-space: pre; tab-size: 2;
+  }
+  #chat-input-row {
+    display: flex; padding: 8px 12px; gap: 8px;
+    border-top: 1px solid var(--border);
+  }
+  #chat-input {
+    flex: 1; background: #12122a; border: 1px solid var(--border);
+    color: var(--text); padding: 8px 12px; border-radius: 6px;
+    font-size: 0.85rem; font-family: inherit;
+  }
+  #chat-input:focus { border-color: var(--accent); outline: none; }
+  #chat-send {
+    background: var(--accent); color: #000; border: none;
+    padding: 8px 16px; border-radius: 6px; cursor: pointer; font-weight: 600;
+  }
+  #chat-hint {
+    color: #555; font-size: 0.72rem; padding: 4px 14px 8px;
+  }
+</style>
+</head>
+<body>
+
+<!-- ═══ 侧边栏 ═══ -->
+<div id="sidebar">
+  <h1>📡 S-Parameter Dashboard</h1>
+
+  <!-- 上传 -->
+  <div class="section">
+    <h3>📤 上传 Touchstone 文件</h3>
+    <div id="dropzone">
+      <div class="icon">📁</div>
+      <p>拖拽 .sNp 文件到这里 或 点击选择</p>
+    </div>
+    <input type="file" id="fileInput" accept=".s1p,.s2p,.s3p,.s4p,.s5p,.s6p,.sNp,.ts" multiple hidden>
+  </div>
+
+  <!-- 已加载文件 -->
+  <div class="section">
+    <h3>📋 已加载网络</h3>
+    <div id="fileList"><p style="color:#555;font-size:0.8rem;">尚未上传文件</p></div>
+  </div>
+
+  <!-- 参数选择 -->
+  <div class="section">
+    <h3>🎯 选择 S 参数</h3>
+    <div id="paramTags" class="param-tags"><p style="color:#555;font-size:0.78rem;">请先选择文件</p></div>
+  </div>
+
+  <!-- 图表类型 -->
+  <div class="section">
+    <h3>📊 图表类型</h3>
+    <div class="chart-type-tabs">
+      <span class="chart-type-tab active" data-type="db">dB 幅度</span>
+      <span class="chart-type-tab" data-type="deg">相位</span>
+      <span class="chart-type-tab" data-type="smith">Smith 圆图</span>
+      <span class="chart-type-tab" data-type="vswr">VSWR</span>
+      <span class="chart-type-tab" data-type="groupdelay">群时延</span>
+      <span class="chart-type-tab" data-type="mag">线性幅度</span>
+    </div>
+  </div>
+
+  <!-- 频率范围 -->
+  <div class="section">
+    <h3>🎚️ 频率范围 (GHz)</h3>
+    <div class="freq-row">
+      <input type="number" id="freqStart" placeholder="起始" step="0.001">
+      <span>→</span>
+      <input type="number" id="freqStop" placeholder="终止" step="0.001">
+      <button id="resetFreq">重置</button>
+    </div>
+  </div>
+
+  <!-- 标题 -->
+  <div class="section">
+    <h3>🏷️ 图表标题</h3>
+    <input type="text" id="chartTitle" placeholder="自定义标题（可选）" style="width:100%;background:#12122a;border:1px solid var(--border);color:var(--text);padding:8px;border-radius:4px;">
+  </div>
+
+  <!-- 操作 -->
+  <div class="section">
+    <div class="action-row">
+      <button class="primary" onclick="generateChart()">🔄 生成图表</button>
+      <button onclick="exportHTML()">📄 导出 HTML</button>
+      <button onclick="showCascadeModal()">🔗 级联</button>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="action-row">
+      <button onclick="exportCSV()">📊 导出 CSV</button>
+      <button onclick="exportTouchstone()">💾 导出 Touchstone</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ 主图表区 ═══ -->
+<div id="main">
+  <div id="toolbar">
+    <h2 id="chartLabel">等待生成图表…</h2>
+    <span style="font-size:0.8rem;color:#555;">hover 查看数值 · 滚轮缩放 · 拖拽平移</span>
+  </div>
+  <div id="chart-area">
+    <div id="chart"></div>
+    <div id="placeholder">
+      <div class="icon">💬</div>
+      <p>拖拽上传 .sNp 文件，或在下方对话框输入指令</p>
+      <p style="font-size:0.75rem;color:#555;margin-top:6px;">试试: "读取 filter.s2p，画 S21 dB 和 Smith 圆图"</p>
+    </div>
+  </div>
+  <!-- 🤖 对话面板 -->
+  <div id="chat-panel">
+    <div id="chat-messages"></div>
+    <div id="chat-hint">💡 试试说: "读取 amp.s2p，画 S11 和 S21 的 dB 图，2到4G"</div>
+    <div id="chat-input-row">
+      <input type="text" id="chat-input" placeholder="说点什么... 例如: 画 S21 相位，只看 3-5GHz"
+             onkeydown="if(event.key==='Enter')sendChat()">
+      <button id="chat-send" onclick="sendChat()">发送</button>
+    </div>
+  </div>
+</div>
+
+<!-- Toast -->
+<div id="toast"></div>
+
+<!-- 级联 Modal -->
+<div id="cascadeModal" class="modal-overlay" style="display:none;">
+  <div class="modal">
+    <h3>🔗 级联网络</h3>
+    <label>网络 A</label>
+    <select id="cascadeA"></select>
+    <label>网络 B</label>
+    <select id="cascadeB"></select>
+    <div class="btn-row">
+      <button onclick="hideCascadeModal()">取消</button>
+      <button class="primary" onclick="doCascade()">级联</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── 全局状态 ──
+const state = {
+  networks: {},     // {name: {nports, f_min, f_max, npoints, params}}
+  selectedFile: null,
+  selectedParams: [],
+  chartType: 'db',
+};
+
+// ── 文件上传 ──
+const dropzone = document.getElementById('dropzone');
+const fileInput = document.getElementById('fileInput');
+
+dropzone.addEventListener('click', () => fileInput.click());
+dropzone.addEventListener('dragover', e => { e.preventDefault(); dropzone.classList.add('drag'); });
+dropzone.addEventListener('dragleave', () => dropzone.classList.remove('drag'));
+dropzone.addEventListener('drop', e => {
+  e.preventDefault();
+  dropzone.classList.remove('drag');
+  for (const f of e.dataTransfer.files) uploadFile(f);
+});
+fileInput.addEventListener('change', () => {
+  for (const f of fileInput.files) uploadFile(f);
+  fileInput.value = '';
+});
+
+async function uploadFile(file) {
+  const form = new FormData();
+  form.append('file', file);
+  form.append('session', 'default');
+
+  try {
+    const res = await fetch('/api/upload', { method: 'POST', body: form });
+    const data = await res.json();
+    if (data.error) { toast(data.error, 'error'); return; }
+    state.networks[data.name] = data;
+    renderFileList();
+    toast(`已加载: ${data.name} (${data.nports}端口, ${data.npoints}点)`);
+  } catch (err) {
+    toast('上传失败: ' + err.message, 'error');
+  }
+}
+
+// ── 文件列表 ──
+function renderFileList() {
+  const el = document.getElementById('fileList');
+  const names = Object.keys(state.networks);
+  if (!names.length) {
+    el.innerHTML = '<p style="color:#555;font-size:0.8rem;">尚未上传文件</p>';
+    state.selectedFile = null;
+    renderParamTags();
+    return;
+  }
+  el.innerHTML = names.map(name => {
+    const n = state.networks[name];
+    const sel = state.selectedFile === name ? ' selected' : '';
+    return `<div class="file-card${sel}" onclick="selectFile('${name}')">
+      <div class="info">
+        <div class="name">${name}</div>
+        <div class="meta">${n.nports}端口 · ${n.f_min.toFixed(3)}–${n.f_max.toFixed(3)} GHz · ${n.npoints}点</div>
+      </div>
+      <button class="remove" onclick="event.stopPropagation();removeFile('${name}')">✕</button>
+    </div>`;
+  }).join('');
+}
+
+function selectFile(name) {
+  state.selectedFile = name;
+  state.selectedParams = [];
+  renderFileList();
+  renderParamTags();
+}
+
+async function removeFile(name) {
+  await fetch(`/api/networks/${name}?session=default`, { method: 'DELETE' });
+  delete state.networks[name];
+  if (state.selectedFile === name) state.selectedFile = null;
+  state.selectedParams = [];
+  renderFileList();
+  renderParamTags();
+  toast(`已移除: ${name}`);
+}
+
+// ── 参数标签 ──
+function renderParamTags() {
+  const el = document.getElementById('paramTags');
+  if (!state.selectedFile || !state.networks[state.selectedFile]) {
+    el.innerHTML = '<p style="color:#555;font-size:0.78rem;">请先选择文件</p>';
+    return;
+  }
+  const params = state.networks[state.selectedFile].params;
+  el.innerHTML = params.map(p => {
+    const active = state.selectedParams.includes(p) ? ' active' : '';
+    return `<span class="param-tag${active}" onclick="toggleParam('${p}')">${p}</span>`;
+  }).join('');
+}
+
+function toggleParam(p) {
+  const idx = state.selectedParams.indexOf(p);
+  if (idx >= 0) state.selectedParams.splice(idx, 1);
+  else state.selectedParams.push(p);
+  renderParamTags();
+}
+
+// ── 图表类型 ──
+document.querySelectorAll('.chart-type-tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('.chart-type-tab').forEach(t => t.classList.remove('active'));
+    tab.classList.add('active');
+    state.chartType = tab.dataset.type;
+  });
+});
+
+// ── 频率范围 ──
+document.getElementById('resetFreq').addEventListener('click', () => {
+  document.getElementById('freqStart').value = '';
+  document.getElementById('freqStop').value = '';
+});
+
+// ── 生成图表 ──
+async function generateChart() {
+  if (!state.selectedFile) { toast('请先选择文件', 'error'); return; }
+  if (!state.selectedParams.length) { toast('请选择至少一个 S 参数', 'error'); return; }
+
+  const freqStart = parseFloat(document.getElementById('freqStart').value) || null;
+  const freqStop = parseFloat(document.getElementById('freqStop').value) || null;
+  const freqRange = freqStart != null && freqStop != null ? [freqStart * 1e9, freqStop * 1e9] : null;
+
+  const payload = {
+    session: 'default',
+    type: state.chartType,
+    networks: [{ name: state.selectedFile, params: state.selectedParams, label: state.selectedFile }],
+    freq_range: freqRange,
+    title: document.getElementById('chartTitle').value || `${state.selectedFile} - ${state.selectedParams.join(', ')}`,
+  };
+
+  try {
+    const res = await fetch('/api/chart', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const fig = await res.json();
+    if (fig.error) { toast(fig.error, 'error'); return; }
+
+    document.getElementById('placeholder').style.display = 'none';
+    Plotly.newPlot('chart', fig.data, fig.layout, { responsive: true, displaylogo: false });
+    document.getElementById('chartLabel').textContent = payload.title;
+    toast('图表已生成');
+  } catch (err) {
+    toast('生成失败: ' + err.message, 'error');
+  }
+}
+
+// ── 导出 HTML ──
+async function exportHTML() {
+  if (!state.selectedFile || !state.selectedParams.length) {
+    toast('请先生成图表', 'error'); return;
+  }
+  const payload = {
+    session: 'default',
+    type: state.chartType,
+    networks: [{ name: state.selectedFile, params: state.selectedParams, label: state.selectedFile }],
+    title: document.getElementById('chartTitle').value || `${state.selectedFile} Report`,
+  };
+  const res = await fetch('/api/chart/html', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json();
+  if (data.error) { toast(data.error, 'error'); return; }
+
+  // 触发下载
+  const blob = new Blob([data.html], { type: 'text/html' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 's_param_report.html';
+  a.click();
+  URL.revokeObjectURL(url);
+  toast('HTML 报告已下载');
+}
+
+// ── 导出 CSV ──
+async function exportCSV() {
+  if (!state.selectedFile || !state.selectedParams.length) {
+    toast('请先选择文件和参数', 'error'); return;
+  }
+  const freqStart = parseFloat(document.getElementById('freqStart').value) || null;
+  const freqStop = parseFloat(document.getElementById('freqStop').value) || null;
+
+  const payload = {
+    session: 'default',
+    network: state.selectedFile,
+    params: state.selectedParams,
+    freq_range: freqStart != null && freqStop != null ? [freqStart * 1e9, freqStop * 1e9] : null,
+  };
+  const res = await fetch('/api/export/csv', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const blob = await res.blob();
+  downloadBlob(blob, `${state.selectedFile}_export.csv`);
+  toast('CSV 已导出');
+}
+
+async function exportTouchstone() {
+  if (!state.selectedFile) { toast('请先选择文件', 'error'); return; }
+  const freqStart = parseFloat(document.getElementById('freqStart').value) || null;
+  const freqStop = parseFloat(document.getElementById('freqStop').value) || null;
+
+  const payload = {
+    session: 'default',
+    network: state.selectedFile,
+    freq_range: freqStart != null && freqStop != null ? [freqStart * 1e9, freqStop * 1e9] : null,
+  };
+  const res = await fetch('/api/export/touchstone', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const blob = await res.blob();
+  const n = state.networks[state.selectedFile].nports;
+  downloadBlob(blob, `${state.selectedFile}_export.s${n}p`);
+  toast('Touchstone 已导出');
+}
+
+async function doCascade() {
+  const a = document.getElementById('cascadeA').value;
+  const b = document.getElementById('cascadeB').value;
+  if (!a || !b) { toast('请选择两个网络', 'error'); return; }
+  try {
+    const res = await fetch('/api/cascade', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session: 'default', network_a: a, network_b: b }),
+    });
+    const data = await res.json();
+    if (data.error) { toast(data.error, 'error'); return; }
+    state.networks[data.name] = data;
+    state.selectedFile = data.name;
+    renderFileList();
+    renderParamTags();
+    hideCascadeModal();
+    toast(`级联完成: ${data.name}`);
+  } catch (err) {
+    toast('级联失败: ' + err.message, 'error');
+  }
+}
+
+// ── 工具函数 ──
+function downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename;
+  a.click(); URL.revokeObjectURL(url);
+}
+
+function toast(msg, type) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.className = type === 'error' ? 'error show' : 'show';
+  clearTimeout(el._timeout);
+  el._timeout = setTimeout(() => el.classList.remove('show', 'error'), 2500);
+}
+
+function showCascadeModal() {
+  const names = Object.keys(state.networks);
+  if (names.length < 2) { toast('需要至少两个网络才能级联', 'error'); return; }
+  const opts = names.map(n => `<option value="${n}">${n}</option>`).join('');
+  document.getElementById('cascadeA').innerHTML = opts;
+  document.getElementById('cascadeB').innerHTML = opts;
+  document.getElementById('cascadeModal').style.display = 'flex';
+}
+function hideCascadeModal() {
+  document.getElementById('cascadeModal').style.display = 'none';
+}
+
+// ── 🤖 Agent Chat ──
+(async function checkChatMode() {
+  try {
+    const res = await fetch('/api/chat/mode');
+    const data = await res.json();
+    const hint = document.getElementById('chat-hint');
+    if (data.llm_available) {
+      hint.innerHTML = '🤖 <b>代码生成 Agent</b> — ' + data.llm_model + ' @ ' + (data.llm_base_url || '') + ' — 受限 skrf+plotly 代码，沙箱执行';
+    } else {
+      hint.innerHTML = '⚠️ 未配置 LLM — 设置 DEEPSEEK_API_KEY 或 OPENAI_API_KEY 环境变量';
+    }
+  } catch(e) {}
+})();
+
+async function sendChat() {
+  const input = document.getElementById('chat-input');
+  const text = input.value.trim();
+  if (!text) return;
+
+  addChatMsg('user', text);
+  input.value = '';
+  document.getElementById('chat-hint').style.display = 'none';
+
+  try {
+    // 使用 Agent API (代码生成模式)
+    const res = await fetch('/api/agent', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text, session: 'default' }),
+    });
+    const data = await res.json();
+
+    // 显示生成的代码
+    if (data.code) {
+      addChatMsg('code', '```python\n' + data.code + '\n```');
+    }
+
+    if (data.reply) {
+      addChatMsg('agent', data.reply);
+    }
+
+    // 处理结果：图表 + 错误
+    let hasChart = false;
+    for (const r of (data.results || [])) {
+      if (r.type === 'chart' && r.chart) {
+        document.getElementById('placeholder').style.display = 'none';
+        Plotly.newPlot('chart', r.chart.data, r.chart.layout, { responsive: true, displaylogo: false });
+        document.getElementById('chartLabel').textContent = r.title || '图表';
+        hasChart = true;
+      }
+      if (r.type === 'error') {
+        addChatMsg('error', r.message);
+      }
+      if (r.type === 'text') {
+        addChatMsg('agent', r.message);
+      }
+    }
+
+    await refreshNetworkList();
+
+    if (!hasChart && !data.reply) {
+      addChatMsg('agent', '✅ 完成');
+    }
+  } catch (err) {
+    addChatMsg('error', '请求失败: ' + err.message);
+  }
+}
+
+function addChatMsg(cls, text) {
+  const container = document.getElementById('chat-messages');
+  const div = document.createElement('div');
+  div.className = 'chat-msg ' + cls;
+  div.textContent = text;
+  container.appendChild(div);
+  container.scrollTop = container.scrollHeight;
+}
+
+async function refreshNetworkList() {
+  try {
+    const res = await fetch('/api/networks?session=default');
+    const data = await res.json();
+    state.networks = data.networks || {};
+    renderFileList();
+    if (!state.selectedFile && Object.keys(state.networks).length > 0) {
+      state.selectedFile = Object.keys(state.networks)[0];
+      renderFileList();
+      renderParamTags();
+    }
+    if (state.selectedFile) renderParamTags();
+  } catch(e) {}
+}
+</script>
+</body>
+</html>

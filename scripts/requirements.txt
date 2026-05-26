@@ -1,0 +1,4 @@
+scikit-rf>=1.0
+plotly>=5.14
+numpy>=1.20
+flask>=2.3

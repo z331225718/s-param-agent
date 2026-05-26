@@ -1,0 +1,12 @@
+{
+  "llm": {
+    "provider": "deepseek",
+    "api_key": "",
+    "base_url": "https://api.deepseek.com",
+    "model": "deepseek-chat",
+    "temperature": 0.0,
+    "max_tokens": 1500,
+    "timeout_sec": 25
+  },
+  "note": "复制为 config.json 并填入 api_key。也可设环境变量 DEEPSEEK_API_KEY。支持任意 OpenAI 兼容 API (ollama/vllm/gpt 等)。"
+}
