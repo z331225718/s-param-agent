@@ -1,0 +1,456 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>S-Parameter Agent — 对话式 RF 工程助手</title>
+<style>
+  :root {
+    --bg: #080c14;
+    --surface: #111827;
+    --surface2: #1a2332;
+    --border: #1e2d45;
+    --text: #c8d6e5;
+    --text2: #8395a7;
+    --accent: #4da6ff;
+    --accent2: #00d4aa;
+    --warn: #f59e0b;
+    --danger: #ef4444;
+    --code-bg: #0d1726;
+    --gradient: linear-gradient(135deg, var(--accent2), var(--accent));
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body {
+    font-family: -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+    background: var(--bg); color: var(--text);
+    line-height: 1.7;
+  }
+
+  /* Hero */
+  .hero {
+    background: linear-gradient(180deg, #0a1628 0%, var(--bg) 100%);
+    padding: 100px 40px 80px;
+    text-align: center;
+    border-bottom: 1px solid var(--border);
+    position: relative; overflow: hidden;
+  }
+  .hero::before {
+    content: '';
+    position: absolute; top:-50%; left:-50%; width:200%; height:200%;
+    background: radial-gradient(circle at 30% 50%, rgba(77,166,255,0.06) 0%, transparent 60%),
+                radial-gradient(circle at 70% 30%, rgba(0,212,170,0.04) 0%, transparent 50%);
+    animation: pulse 8s ease-in-out infinite;
+  }
+  @keyframes pulse {
+    0%,100% { opacity:0.6; transform:scale(1); }
+    50% { opacity:1; transform:scale(1.05); }
+  }
+  .hero h1 {
+    font-size: 3.2rem; font-weight: 800; letter-spacing: -1px;
+    background: var(--gradient); -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent; background-clip: text;
+    position: relative; z-index: 1;
+  }
+  .hero .subtitle {
+    font-size: 1.2rem; color: var(--text2); margin-top: 16px;
+    max-width: 640px; margin-left: auto; margin-right: auto;
+    position: relative; z-index: 1;
+  }
+  .hero .tag-row {
+    display: flex; gap: 10px; justify-content: center; margin-top: 28px;
+    flex-wrap: wrap; position: relative; z-index: 1;
+  }
+  .hero .tag {
+    padding: 6px 16px; border-radius: 20px; font-size: 0.82rem;
+    background: var(--surface2); border: 1px solid var(--border);
+    color: var(--accent); font-weight: 500;
+  }
+
+  /* Sections */
+  .container { max-width: 960px; margin: 0 auto; padding: 0 32px; }
+  .section { padding: 80px 0; }
+  .section:nth-child(odd) { background: var(--surface); }
+  .section h2 {
+    font-size: 1.8rem; font-weight: 700; margin-bottom: 8px;
+    position: relative; display: inline-block;
+  }
+  .section h2::after {
+    content: ''; position: absolute; bottom: -4px; left: 0;
+    width: 48px; height: 3px; background: var(--gradient); border-radius: 2px;
+  }
+  .section .desc { color: var(--text2); font-size: 1rem; margin-bottom: 32px; }
+
+  /* Problem / Solution cards */
+  .card-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px,1fr)); gap: 20px; }
+  .card {
+    background: var(--surface2); border: 1px solid var(--border);
+    border-radius: 12px; padding: 28px 24px;
+    transition: border-color 0.2s, transform 0.2s;
+  }
+  .card:hover { border-color: var(--accent); transform: translateY(-2px); }
+  .card .icon { font-size: 2rem; margin-bottom: 12px; }
+  .card h3 { font-size: 1.1rem; margin-bottom: 8px; color: #fff; }
+  .card p { color: var(--text2); font-size: 0.9rem; }
+
+  /* Architecture diagram */
+  .arch {
+    display: flex; flex-direction: column; gap: 12px;
+    align-items: center; padding: 24px 0;
+  }
+  .arch-row {
+    display: flex; gap: 16px; align-items: center;
+    flex-wrap: wrap; justify-content: center;
+  }
+  .arch-box {
+    background: var(--surface2); border: 1px solid var(--border);
+    border-radius: 10px; padding: 16px 20px; text-align: center;
+    font-size: 0.85rem; min-width: 140px;
+  }
+  .arch-box.title { background: transparent; border: none; font-size: 0.8rem; color: var(--text2); padding: 4px; min-width: auto; }
+  .arch-box.accent { border-color: var(--accent); }
+  .arch-box.green { border-color: var(--accent2); }
+  .arch-arrow {
+    color: var(--accent); font-size: 1.4rem; font-weight: bold;
+  }
+  .arch-bracket {
+    color: var(--text2); font-size: 0.75rem;
+    padding: 0 12px; text-align: center;
+  }
+
+  /* Feature highlight */
+  .highlight-row { display: flex; gap: 24px; align-items: flex-start; flex-wrap: wrap; }
+  .highlight-num { font-size: 3rem; font-weight: 800; color: var(--accent); line-height: 1; min-width: 80px; }
+  .highlight-text h3 { color: #fff; margin-bottom: 6px; }
+  .highlight-text p { color: var(--text2); font-size: 0.9rem; }
+
+  /* Code block */
+  .code-block {
+    background: var(--code-bg); border: 1px solid var(--border);
+    border-radius: 10px; padding: 20px 24px; overflow-x: auto;
+    font-family: 'JetBrains Mono', 'Consolas', 'Courier New', monospace;
+    font-size: 0.82rem; line-height: 1.6; color: #c9d1d9;
+    position: relative;
+  }
+  .code-block .kw { color: #ff7b72; }
+  .code-block .fn { color: #d2a8ff; }
+  .code-block .str { color: #a5d6ff; }
+  .code-block .cmt { color: #8b949e; font-style: italic; }
+  .code-block .num { color: #79c0ff; }
+  .code-label {
+    position: absolute; top: -12px; left: 16px;
+    background: var(--accent); color: #000; font-size: 0.7rem;
+    font-weight: 700; padding: 2px 10px; border-radius: 4px;
+  }
+
+  /* Flow */
+  .flow { display: flex; gap: 0; align-items: center; justify-content: center; flex-wrap: wrap; padding: 20px 0; }
+  .flow-step {
+    background: var(--surface2); border: 1px solid var(--border);
+    border-radius: 8px; padding: 14px 18px; text-align: center;
+    font-size: 0.82rem; position: relative; min-width: 100px;
+  }
+  .flow-arrow { margin: 0 8px; color: var(--accent); font-size: 1.2rem; }
+
+  /* Stats */
+  .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px,1fr)); gap: 16px; }
+  .stat {
+    background: var(--surface2); border: 1px solid var(--border);
+    border-radius: 10px; padding: 24px 20px; text-align: center;
+  }
+  .stat .num { font-size: 2.2rem; font-weight: 800; background: var(--gradient); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
+  .stat .label { color: var(--text2); font-size: 0.82rem; margin-top: 4px; }
+
+  /* Footer */
+  .footer {
+    text-align: center; padding: 60px 40px;
+    border-top: 1px solid var(--border);
+    color: var(--text2); font-size: 0.85rem;
+  }
+  .footer a { color: var(--accent); text-decoration: none; }
+
+  /* Responsive */
+  @media (max-width: 640px) {
+    .hero h1 { font-size: 2rem; }
+    .arch-row { flex-direction: column; }
+    .arch-arrow { transform: rotate(90deg); }
+  }
+</style>
+</head>
+<body>
+
+<!-- ═══════════════ Hero ═══════════════ -->
+<section class="hero">
+  <h1>S-Parameter Agent</h1>
+  <p class="subtitle">
+    对话式 RF 工程助手 —— 用自然语言替代传统 S 参数处理软件。<br>
+    「读取 filter.s2p，画 S21 和 S11 的 dB 图，双 Y 轴」→ 出图。
+  </p>
+  <div class="tag-row">
+    <span class="tag">scikit-rf</span>
+    <span class="tag">Plotly 交互式</span>
+    <span class="tag">LLM 代码生成</span>
+    <span class="tag">知识图谱纠错</span>
+    <span class="tag">自进化教训库</span>
+    <span class="tag">沙箱安全执行</span>
+  </div>
+</section>
+
+<!-- ═══════════════ 解决的问题 ═══════════════ -->
+<section class="section">
+  <div class="container">
+    <h2>解决了什么问题</h2>
+    <p class="desc">传统 RF 软件（ADS、VNA 上位机、MATLAB RF Toolbox）的痛点</p>
+    <div class="card-grid">
+      <div class="card">
+        <div class="icon">🖱️</div>
+        <h3>操作繁琐</h3>
+        <p>菜单→对话框→选参数→调坐标轴→导出。一个 S21 dB 图要点十几下。对话式：一句话出图。</p>
+      </div>
+      <div class="card">
+        <div class="icon">📖</div>
+        <h3>学习成本高</h3>
+        <p>每个软件有自己的一套操作逻辑和脚本语言（ADS AEL、MATLAB）。本工具：说人话即可。</p>
+      </div>
+      <div class="card">
+        <div class="icon">🔄</div>
+        <h3>批量处理困难</h3>
+        <p>传统软件处理多文件对比、级联分析需要大量重复操作。Agent 自动理解意图，一次处理多个 S 参数文件。</p>
+      </div>
+      <div class="card">
+        <div class="icon">📊</div>
+        <h3>图表不交互</h3>
+        <p>ADS 和 VNA 导出的是静态图片。本项目输出 Plotly 交互式图表：缩放、悬浮看值、框选、双击重置。</p>
+      </div>
+      <div class="card">
+        <div class="icon">🧠</div>
+        <h3>API 记不住</h3>
+        <p>skrf 有 200+ 个方法、plotly 有上千个参数。本项目的知识图谱 + 自进化机制让 Agent 替你记住正确 API。</p>
+      </div>
+      <div class="card">
+        <div class="icon">🔒</div>
+        <h3>代码不安全</h3>
+        <p>LLM 直接生成代码可能包含危险调用。本项目有 AST 白名单校验 + subprocess 沙箱，os.system/eval 等全部拦截。</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════ 架构 ═══════════════ -->
+<section class="section">
+  <div class="container">
+    <h2>系统架构</h2>
+    <p class="desc">四层管线：自然语言 → 约束代码生成 → 安全执行 → 交互式输出</p>
+
+    <div class="arch">
+      <div class="arch-box title">👤 用户自然语言输入</div>
+      <div class="arch-arrow">↓</div>
+      <div class="arch-row">
+        <div class="arch-box accent">
+          <strong>System Prompt</strong><br>
+          <span style="font-size:0.75rem;color:var(--text2)">API 速查 + 铁律 + 已学教训</span>
+        </div>
+        <div class="arch-arrow">→</div>
+        <div class="arch-box accent">
+          <strong>LLM</strong><br>
+          <span style="font-size:0.75rem;color:var(--text2)">DeepSeek / GPT / Ollama</span>
+        </div>
+        <div class="arch-arrow">→</div>
+        <div class="arch-box">
+          <strong>代码生成</strong><br>
+          <span style="font-size:0.75rem;color:var(--text2)">仅 skrf + plotly + numpy</span>
+        </div>
+      </div>
+      <div class="arch-arrow">↓</div>
+      <div class="arch-row">
+        <div class="arch-box green">
+          <strong>AST 安全校验</strong><br>
+          <span style="font-size:0.75rem;color:var(--text2)">import 白名单 / eval 拦截</span>
+        </div>
+        <div class="arch-arrow">→</div>
+        <div class="arch-box green">
+          <strong>subprocess 沙箱</strong><br>
+          <span style="font-size:0.75rem;color:var(--text2)">15s 超时隔离执行</span>
+        </div>
+      </div>
+      <div class="arch-arrow">↓</div>
+      <div class="arch-row">
+        <div class="arch-box">❌ 失败</div>
+        <div class="arch-arrow">→</div>
+        <div class="arch-box accent">
+          <strong>知识图谱纠错</strong><br>
+          <span style="font-size:0.75rem;color:var(--text2)">876节点 / 494边</span>
+        </div>
+        <div class="arch-arrow">→</div>
+        <div class="arch-box accent">
+          <strong>LLM 重新生成</strong><br>
+          <span style="font-size:0.75rem;color:var(--text2)">最多 3 次</span>
+        </div>
+        <div class="arch-arrow">→</div>
+        <div class="arch-box">
+          <strong>自进化学习</strong><br>
+          <span style="font-size:0.75rem;color:var(--text2)">错误→规则→lessons.json</span>
+        </div>
+      </div>
+      <div style="height:8px"></div>
+      <div class="arch-box title">✅ 成功 ↓</div>
+      <div class="arch-box green" style="font-size:1rem">
+        📊 Plotly 交互式图表 → Web UI 渲染
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════ 关键机制 ═══════════════ -->
+<section class="section">
+  <div class="container">
+    <h2>三大核心机制</h2>
+    <p class="desc">不是简单的「LLM 生成代码」，而是三层防线确保正确性</p>
+
+    <div class="highlight-row" style="margin-bottom:40px">
+      <div class="highlight-num">01</div>
+      <div class="highlight-text">
+        <h3>知识图谱纠错</h3>
+        <p>876 节点 + 494 条类型化关系边。当 LLM 用错 API（如 <code>update_xaxis</code>），图谱沿 <code>mistaken_for</code> 边找到正确 API（<code>update_xaxes</code> / <code>update_layout(xaxis_type=)</code>），并附带参数列表和父类信息，一次性纠正。</p>
+      </div>
+    </div>
+
+    <div class="highlight-row" style="margin-bottom:40px">
+      <div class="highlight-num">02</div>
+      <div class="highlight-text">
+        <h3>自进化教训库</h3>
+        <p>每次纠错成功后，自动提取「错误模式 → 正确 API」规则，去重加权后持久化到 <code>lessons.json</code>。同一错误再犯时 count++，排序更靠前。下次请求时，累积的教训注入 system prompt，类似 Few-Shot 记忆。</p>
+      </div>
+    </div>
+
+    <div class="highlight-row" style="margin-bottom:40px">
+      <div class="highlight-num">03</div>
+      <div class="highlight-text">
+        <h3>三层安全防线</h3>
+        <p>
+          ① System Prompt 铁律区（频率必须转 GHz、禁止 SI 前缀、必须科学计数法）<br>
+          ② AST 白名单校验（只允许 skrf/plotly/numpy 的 import，拦截 eval/os/subprocess）<br>
+          ③ subprocess 沙箱执行（独立进程 + 15s 超时 + fig.show() 物理删除）
+        </p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════ 对话示例 ═══════════════ -->
+<section class="section">
+  <div class="container">
+    <h2>对话示例</h2>
+    <p class="desc">用户说什么，Agent 生成什么代码</p>
+
+    <div style="margin-bottom:24px">
+      <div class="code-block">
+        <div class="code-label">用户输入</div>
+        「读取 filter.s2p，画 S11 和 S21 的 dB 图，左右两个纵轴」
+      </div>
+    </div>
+
+    <div class="code-block">
+      <div class="code-label">Agent 生成</div>
+<span class="kw">import</span> skrf <span class="kw">as</span> rf
+<span class="kw">import</span> numpy <span class="kw">as</span> np
+<span class="kw">import</span> plotly.graph_objects <span class="kw">as</span> go
+<span class="kw">from</span> plotly.subplots <span class="kw">import</span> make_subplots
+
+ntwk = rf.Network(<span class="str">'filter.s2p'</span>)
+freq_ghz = ntwk.f / <span class="num">1e9</span>     <span class="cmt"># 铁律：频率转 GHz</span>
+
+fig = make_subplots(specs=[[{<span class="str">"secondary_y"</span>: <span class="kw">True</span>}]])
+fig.add_trace(go.Scatter(x=freq_ghz, y=ntwk.s_db[:,<span class="num">0</span>,<span class="num">0</span>],
+              mode=<span class="str">'lines'</span>, name=<span class="str">'S11'</span>), secondary_y=<span class="kw">False</span>)
+fig.add_trace(go.Scatter(x=freq_ghz, y=ntwk.s_db[:,<span class="num">1</span>,<span class="num">0</span>],
+              mode=<span class="str">'lines'</span>, name=<span class="str">'S21'</span>), secondary_y=<span class="kw">True</span>)
+
+fig.update_layout(xaxis_title=<span class="str">'Frequency (GHz)'</span>,
+                  yaxis_title=<span class="str">'S11 (dB)'</span>,
+                  template=<span class="str">'plotly_white'</span>)
+fig.update_xaxes(exponentformat=<span class="str">'power'</span>, showexponent=<span class="str">'all'</span>)
+fig.update_yaxes(exponentformat=<span class="str">'power'</span>, showexponent=<span class="str">'all'</span>)
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════ 数据统计 ═══════════════ -->
+<section class="section">
+  <div class="container">
+    <h2>技术数据</h2>
+    <div class="stat-grid">
+      <div class="stat"><div class="num">834</div><div class="label">API 索引条目（自动提取）</div></div>
+      <div class="stat"><div class="num">876</div><div class="label">知识图谱节点</div></div>
+      <div class="stat"><div class="num">494</div><div class="label">类型化关系边</div></div>
+      <div class="stat"><div class="num">7</div><div class="label">关系类型 (has_method / mistaken_for / ...)</div></div>
+      <div class="stat"><div class="num">3</div><div class="label">最大纠错重试次数</div></div>
+      <div class="stat"><div class="num">~580</div><div class="label">System Prompt tokens（每次调用）</div></div>
+      <div class="stat"><div class="num">15s</div><div class="label">沙箱执行超时</div></div>
+      <div class="stat"><div class="num">0</div><div class="label">危险调用放行 (eval/os/subprocess)</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════ 配置灵活 ═══════════════ -->
+<section class="section">
+  <div class="container">
+    <h2>LLM 配置灵活</h2>
+    <p class="desc">支持任意 OpenAI 兼容 API，一键切换模型</p>
+    <div class="code-block">
+      <div class="code-label">config.json</div>
+{
+  <span class="str">"llm"</span>: {
+    <span class="str">"api_key"</span>: <span class="str">"sk-xxx"</span>,
+    <span class="str">"base_url"</span>: <span class="str">"https://api.deepseek.com"</span>,   <span class="cmt">// DeepSeek</span>
+    <span class="str">"model"</span>: <span class="str">"deepseek-chat"</span>
+  }
+}
+<span class="cmt">// 也支持: OpenAI GPT-4o · Ollama qwen2.5 · vLLM 等</span>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════ 下一步 ═══════════════ -->
+<section class="section">
+  <div class="container">
+    <h2>下一步：多 S 参数输入</h2>
+    <p class="desc">当前支持单文件操作。下一步的核心升级方向：</p>
+    <div class="card-grid">
+      <div class="card">
+        <div class="icon">📂</div>
+        <h3>批量文件加载</h3>
+        <p>拖拽或通配符加载多个 .sNp 文件，自动识别端口数和频率范围，统一或独立坐标系展示。</p>
+      </div>
+      <div class="card">
+        <div class="icon">🔗</div>
+        <h3>智能级联与拓扑</h3>
+        <p>用户描述「LNA → BPF → Amplifier」链路，Agent 自动理解拓扑并计算级联 S 参数。</p>
+      </div>
+      <div class="card">
+        <div class="icon">📊</div>
+        <h3>多文件对比视图</h3>
+        <p>同一参数（如 S21）的多次测量结果叠加对比，自动标注差异和统计信息。</p>
+      </div>
+      <div class="card">
+        <div class="icon">🧮</div>
+        <h3>去嵌与校准</h3>
+        <p>自动识别夹具文件，执行 SOLT/TRL 校准和去嵌操作，支持多端口误差模型。</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════ Footer ═══════════════ -->
+<footer class="footer">
+  <p>
+    <a href="https://github.com/z331225718/s-param-agent">GitHub: z331225718/s-param-agent</a>
+    &nbsp;·&nbsp; MIT License
+    &nbsp;·&nbsp; 基座: scikit-rf + Plotly + NetworkX
+  </p>
+  <p style="margin-top:8px;font-size:0.78rem;color:#555;">
+    Built with ❤️ for RF Engineers who deserve better tools.
+  </p>
+</footer>
+
+</body>
+</html>
