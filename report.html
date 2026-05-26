@@ -130,7 +130,7 @@
     font-family: 'JetBrains Mono', 'Consolas', 'Courier New', monospace;
     font-size: 0.82rem; line-height: 1.8; color: #c9d1d9;
     position: relative; white-space: pre-wrap; word-break: break-word;
-    overflow: visible;
+    overflow: visible; text-align: left;
   }
   .code-block-content {
     overflow-x: auto; max-height: 460px; overflow-y: auto;
@@ -141,7 +141,7 @@
   .code-block .cmt { color: #8b949e; font-style: italic; margin-right: 12px; }
   .code-block .num { color: #79c0ff; }
   .code-label {
-    display: inline-block;
+    display: block; width: fit-content;
     background: var(--gradient); color: #000; font-size: 0.7rem;
     font-weight: 700; padding: 3px 12px; border-radius: 5px;
     letter-spacing: 0.5px; margin-bottom: 12px;
@@ -195,7 +195,7 @@
     <span class="tag">Plotly 交互式</span>
     <span class="tag">LLM 代码生成</span>
     <span class="tag">知识图谱纠错</span>
-    <span class="tag">自进化教训库</span>
+    <span class="tag">自进化库</span>
     <span class="tag">沙箱安全执行</span>
   </div>
 </section>
@@ -204,7 +204,7 @@
 <section class="section">
   <div class="container">
     <h2>解决了什么问题</h2>
-    <p class="desc">传统 RF 软件（ADS、VNA 上位机、MATLAB RF Toolbox）的痛点</p>
+    <p class="desc">传统 RF 软件（ADS、Cadence、Ansys、MATLAB RF Toolbox）的痛点</p>
     <div class="card-grid">
       <div class="card">
         <div class="icon">🖱️</div>
