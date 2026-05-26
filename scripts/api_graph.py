@@ -254,6 +254,12 @@ def _add_concept_edges(G):
     G.add_edge("Figure.update_xaxes", "exponentformat_power", type="related_to")
     G.add_edge("Figure.update_yaxes", "exponentformat_power", type="related_to")
 
+    # 短路/开路/负载终端的输入阻抗
+    _ensure_node(G, "port_termination", kind="concept", lib="skrf",
+                  desc="✅ 用 Z 参数算终端阻抗: z=ntwk.z; zin = z[:,0,0] - (z[:,0,1]*z[:,1,0])/(z[:,1,1]+ZL); ZL=0短路/ZL=inf开路。不要用 S 参数手推公式！",
+                  sig="z=ntwk.z; ZL=0; zin=z[:,0,0]-(z[:,0,1]*z[:,1,0])/(z[:,1,1]+ZL)")
+    G.add_edge("Network.z", "port_termination", type="related_to")
+
 
 # ═══════════════════════════════════════════════════════════════
 #  图谱查询
