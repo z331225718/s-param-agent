@@ -244,6 +244,16 @@ def _add_concept_edges(G):
     G.add_edge("freq_not_scaled", "ntwk.f_div_1e9", type="mistaken_for")
     G.add_edge("Network.f", "ntwk.f_div_1e9", type="related_to")
 
+    # 禁止 SI 前缀
+    _ensure_node(G, "SI_prefix_bad", kind="mistake", lib="plotly",
+                  desc="❌ Plotly 自动 SI 前缀(μ/k/M/B) → 标签丑陋。✅ 强制科学计数法")
+    _ensure_node(G, "exponentformat_power", kind="concept", lib="plotly",
+                  desc="✅ fig.update_xaxes(exponentformat='power', showexponent='all'); y轴同理",
+                  sig="fig.update_xaxes(exponentformat='power', showexponent='all')")
+    G.add_edge("SI_prefix_bad", "exponentformat_power", type="mistaken_for")
+    G.add_edge("Figure.update_xaxes", "exponentformat_power", type="related_to")
+    G.add_edge("Figure.update_yaxes", "exponentformat_power", type="related_to")
+
 
 # ═══════════════════════════════════════════════════════════════
 #  图谱查询

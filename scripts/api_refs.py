@@ -148,6 +148,8 @@ def build_api_prompt() -> str:
     lines.append("- ❌ 没有 update_xaxis / update_yaxis（单数）")
     lines.append("- ✅ 用 update_xaxes / update_yaxes（复数）或 update_layout(xaxis_type=)")
     lines.append("- ✅ log 轴: `fig.update_layout(xaxis_type='log', yaxis_type='log')`")
+    lines.append("- **每张图必须加**: `fig.update_xaxes(exponentformat='power',showexponent='all')`")
+    lines.append("  否则出现 μ/k/B 等 SI 前缀（如 1B 替代 1e9）！同样 y 轴也要。")
     lines.append("")
     lines.append("### skrf 铁律")
     lines.append("- **频率必须转GHz**: `freq_ghz = ntwk.f / 1e9`，直接用 ntwk.f 会导致 X轴显示 1B/2B！")
