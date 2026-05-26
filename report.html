@@ -126,11 +126,14 @@
   /* Code block */
   .code-block {
     background: var(--code-bg); border: 1px solid var(--border);
-    border-radius: 10px; padding: 28px 24px 20px; overflow-x: auto;
+    border-radius: 10px; padding: 20px 24px;
     font-family: 'JetBrains Mono', 'Consolas', 'Courier New', monospace;
     font-size: 0.82rem; line-height: 1.8; color: #c9d1d9;
     position: relative; white-space: pre-wrap; word-break: break-word;
-    max-height: none; overflow-y: visible;
+    overflow: visible;
+  }
+  .code-block-content {
+    overflow-x: auto; max-height: 460px; overflow-y: auto;
   }
   .code-block .kw { color: #ff7b72; }
   .code-block .fn { color: #d2a8ff; }
@@ -138,10 +141,10 @@
   .code-block .cmt { color: #8b949e; font-style: italic; margin-right: 12px; }
   .code-block .num { color: #79c0ff; }
   .code-label {
-    position: absolute; top: -11px; left: 14px;
+    display: inline-block;
     background: var(--gradient); color: #000; font-size: 0.7rem;
     font-weight: 700; padding: 3px 12px; border-radius: 5px;
-    z-index: 2; letter-spacing: 0.5px;
+    letter-spacing: 0.5px; margin-bottom: 12px;
   }
 
   /* Flow */
@@ -347,12 +350,13 @@
     <div style="margin-bottom:24px">
       <div class="code-block">
         <div class="code-label">用户输入</div>
-        「读取 filter.s2p，画 S11 和 S21 的 dB 图，左右两个纵轴」
+        <div class="code-block-content">「读取 filter.s2p，画 S11 和 S21 的 dB 图，左右两个纵轴」</div>
       </div>
     </div>
 
     <div class="code-block">
       <div class="code-label">Agent 生成</div>
+      <div class="code-block-content">
 <span class="kw">import</span> skrf <span class="kw">as</span> rf
 <span class="kw">import</span> numpy <span class="kw">as</span> np
 <span class="kw">import</span> plotly.graph_objects <span class="kw">as</span> go
@@ -372,6 +376,7 @@ fig.update_layout(xaxis_title=<span class="str">'Frequency (GHz)'</span>,
                   template=<span class="str">'plotly_white'</span>)
 fig.update_xaxes(exponentformat=<span class="str">'power'</span>, showexponent=<span class="str">'all'</span>)
 fig.update_yaxes(exponentformat=<span class="str">'power'</span>, showexponent=<span class="str">'all'</span>)
+      </div>
     </div>
   </div>
 </section>
@@ -400,6 +405,7 @@ fig.update_yaxes(exponentformat=<span class="str">'power'</span>, showexponent=<
     <p class="desc">支持任意 OpenAI 兼容 API，一键切换模型</p>
     <div class="code-block">
       <div class="code-label">config.json</div>
+      <div class="code-block-content">
 {
   <span class="str">"llm"</span>: {
     <span class="str">"api_key"</span>: <span class="str">"sk-xxx"</span>,
@@ -408,6 +414,7 @@ fig.update_yaxes(exponentformat=<span class="str">'power'</span>, showexponent=<
   }
 }
 <span class="cmt">// 也支持: OpenAI GPT-4o · Ollama qwen2.5 · vLLM 等</span>
+      </div>
     </div>
   </div>
 </section>
