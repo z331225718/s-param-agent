@@ -85,6 +85,15 @@ FORBIDDEN_BUILTINS = {
     "breakpoint", "input",
 }
 
+# 无条件物理删除的危险调用（在 AST 校验前用正则移除）
+import re as _re
+_DANGEROUS_PATTERNS = [
+    (r'^\s*fig\.show\s*\(\s*\)', '# [removed] fig.show()'),
+    (r'^\s*fig\.write_html\s*\(', '# [removed] fig.write_html()'),
+    (r'^\s*fig\.write_image\s*\(', '# [removed] fig.write_image()'),
+    (r'^\s*plt\.show\s*\(\s*\)', '# [removed] plt.show()'),
+]
+
 # 允许 open() 写入的扩展名
 ALLOWED_OPEN_EXTENSIONS = {".s1p", ".s2p", ".s3p", ".s4p", ".sNp",
                            ".csv", ".tsv", ".html", ".png", ".pdf", ".svg",
@@ -473,6 +482,11 @@ def generate_code(user_text: str, file_path: str = None) -> dict:
             continue
 
         last_code = code
+
+        # 无条件删除危险调用（fig.show/write_html/write_image/plt.show）
+        for pattern, replacement in _DANGEROUS_PATTERNS:
+            code = _re.sub(pattern, replacement, code, flags=_re.MULTILINE)
+        last_code = code  # 同步清理后的代码
 
         # 校验
         valid, msg = validate_code(code)
