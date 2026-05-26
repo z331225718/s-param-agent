@@ -150,6 +150,7 @@ def build_api_prompt() -> str:
     lines.append("- ✅ log 轴: `fig.update_layout(xaxis_type='log', yaxis_type='log')`")
     lines.append("")
     lines.append("### skrf 铁律")
+    lines.append("- **频率必须转GHz**: `freq_ghz = ntwk.f / 1e9`，直接用 ntwk.f 会导致 X轴显示 1B/2B！")
     lines.append("- S参数是3D数组: `ntwk.s_db[:, m, n]` 不是 `[m, n]`")
     lines.append("- 切片: `ntwk['2-4ghz']` 不是 `.slice()`")
     lines.append("- 级联: `ntwk1 ** ntwk2` 不是 `.cascade()`")

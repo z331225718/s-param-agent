@@ -235,6 +235,15 @@ def _add_concept_edges(G):
     G.add_edge("s_db[1,0]", "3D_array_indexing", type="mistaken_for")
     G.add_edge("s_db[0,0]", "3D_array_indexing", type="mistaken_for")
 
+    # 频率必须转 GHz
+    _ensure_node(G, "freq_not_scaled", kind="mistake", lib="skrf",
+                  desc="❌ 直接用 ntwk.f → X轴显示 1B/2B (Plotly把1e9缩写成1B)。✅ 必须 freq_ghz = ntwk.f / 1e9")
+    _ensure_node(G, "ntwk.f_div_1e9", kind="correct_api", lib="skrf",
+                  desc="✅ freq_ghz = ntwk.f / 1e9; 然后 x=freq_ghz, xaxis_title='Frequency (GHz)'",
+                  sig="freq_ghz = ntwk.f / 1e9")
+    G.add_edge("freq_not_scaled", "ntwk.f_div_1e9", type="mistaken_for")
+    G.add_edge("Network.f", "ntwk.f_div_1e9", type="related_to")
+
 
 # ═══════════════════════════════════════════════════════════════
 #  图谱查询

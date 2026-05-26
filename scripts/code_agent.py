@@ -109,11 +109,18 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 ```
 
+### ⚠️ 铁律（违反必错）
+- **频率必须转 GHz**：`ntwk.f` 单位是 Hz，直接用会出现 1B/2B 的丑陋标签。
+  所有 X 轴必须用 `freq_ghz = ntwk.f / 1e9`，然后 `x=freq_ghz`。
+  同时设 `xaxis_title='Frequency (GHz)'`。
+- **S/Z/Y 参数是 3D 数组**：必须用 `[:, m, n]` 索引，不是 `[m, n]`！
+
 ### 禁止
 - 不要 import os, sys, subprocess, requests, urllib, shutil
 - 不要使用 eval(), exec(), __import__()
 - 不要写死绝对路径
 - 不要调用 fig.show() 或 fig.write_html()
+- **不要直接用 ntwk.f 作为 X 轴数据！必须先除以 1e9！**
 
 ### 输出格式
 只输出代码，放在 ```python 代码块中。不要解释。
