@@ -479,6 +479,132 @@ def _execute_op(op, session_id: str, last_ntwk_name: str = None) -> dict:
                         f"{info['f_min']/1e9:.3f}–{info['f_max']/1e9:.3f} GHz, {info['npoints']}点")
         return {"type": "text", "message": "\n".join(lines)}
 
+    # ── CASCADE_CHAIN ──
+    if op.action == "cascade_chain":
+        chain_names = op.chain if op.chain else [op.target, op.cascade_with]
+        chain_names = [n for n in chain_names if n]
+        if len(chain_names) < 2:
+            return {"type": "error", "message": "链式级联需要至少 2 个网络，例如: LNA → BPF → AMP"}
+        networks = []
+        for name in chain_names:
+            ntwk = _get_network(session_id, name)
+            if ntwk is None:
+                return {"type": "error", "message": f"找不到网络 '{name}'，已加载: {list(ses['networks'].keys())}"}
+            networks.append(ntwk)
+        try:
+            result = sp.cascade_chain(networks)
+        except ValueError as e:
+            return {"type": "error", "message": str(e)}
+        result_name = op.result_name or "_".join(chain_names)
+        tmp_path = tempfile.mktemp(suffix=f".s{result.nports}p")
+        result.write_touchstone(tmp_path)
+        ses["networks"][result_name] = {
+            "path": tmp_path,
+            "nports": result.nports,
+            "f_min": float(result.f[0]),
+            "f_max": float(result.f[-1]),
+            "npoints": len(result.f),
+            "params": sp.list_params(result),
+        }
+        return {
+            "type": "text",
+            "message": f"🔗 链式级联完成: {' → '.join(chain_names)} → **{result_name}** ({result.nports}端口)",
+            "ntwk_name": result_name,
+        }
+
+    # ── LOAD_BATCH (glob 模式) ──
+    if op.action == "load_batch":
+        pattern = op.batch_pattern or op.target
+        if not pattern:
+            return {"type": "error", "message": "请提供文件匹配模式，例如 'data/*.s2p'"}
+        import glob as globmod
+        matches = globmod.glob(pattern, recursive=True)
+        if not matches:
+            matches = globmod.glob(f"**/{pattern}", recursive=True)
+        if not matches:
+            return {"type": "error", "message": f"未找到匹配 '{pattern}' 的文件"}
+        loaded = []
+        for path in matches:
+            try:
+                ntwk = sp.load_ntwk(path)
+                name = os.path.splitext(os.path.basename(path))[0]
+                ses["networks"][name] = {
+                    "path": path,
+                    "nports": ntwk.nports,
+                    "f_min": float(ntwk.f[0]),
+                    "f_max": float(ntwk.f[-1]),
+                    "npoints": len(ntwk.f),
+                    "params": sp.list_params(ntwk),
+                }
+                loaded.append(name)
+            except Exception as e:
+                pass
+        return {
+            "type": "text",
+            "message": f"📂 批量加载完成: {len(loaded)} 个文件\n  " + ", ".join(loaded),
+            "ntwk_name": loaded[-1] if loaded else None,
+        }
+
+    # ── COMPARE ──
+    if op.action == "compare":
+        compare_names = op.compare_networks if op.compare_networks else []
+        if not compare_names:
+            # 从 target 和其他字段推断
+            compare_names = [n for n in [op.target, op.cascade_with] if n]
+            if not compare_names:
+                compare_names = list(ses["networks"].keys())[:10]
+        if len(compare_names) < 2:
+            return {"type": "error", "message": "对比至少需要 2 个网络"}
+        networks = []
+        names = []
+        for name in compare_names:
+            ntwk = _get_network(session_id, name)
+            if ntwk is None:
+                continue
+            networks.append(ntwk)
+            names.append(name)
+        if len(networks) < 2:
+            return {"type": "error", "message": f"至少需要 2 个已加载的网络，当前找到 {len(networks)} 个"}
+        try:
+            interpolated = sp.interpolate_to_common_freq(networks, npoints=max(len(n.f) for n in networks))
+        except ValueError as e:
+            return {"type": "error", "message": f"网络频率范围不兼容: {e}"}
+        params = op.params if op.params else ["S21"]
+        parsed_params = []
+        for ps in params:
+            ps = str(ps).strip().upper()
+            if ps.startswith("S") and len(ps) >= 3:
+                m = int(ps[1]) - 1
+                n = int(ps[2]) - 1
+                parsed_params.append((m, n))
+        if not parsed_params:
+            parsed_params = [(1, 0)]
+        ref_idx = 0
+        if op.reference and op.reference in names:
+            ref_idx = names.index(op.reference)
+        chart_type = op.chart_type or "db"
+        if chart_type == "smith":
+            fig = sp.plot_multi_smith(interpolated, names=names, param=parsed_params[0],
+                                      title=op.title or "Smith Comparison")
+        elif len(parsed_params) == 1:
+            fig = sp.plot_multi_db(interpolated, names=names, param=parsed_params[0],
+                                   title=op.title or "Multi-File Comparison",
+                                   show_diff=op.show_diff, reference_idx=ref_idx)
+        else:
+            fig = sp.plot_compare(interpolated, names=names, params=parsed_params,
+                                  title=op.title or "Multi-Parameter Comparison",
+                                  show_diff=op.show_diff, reference_idx=ref_idx)
+        chart_json = json.loads(json.dumps(
+            {"data": fig.data, "layout": fig.layout},
+            cls=plotly.utils.PlotlyJSONEncoder,
+        ))
+        return {
+            "type": "chart",
+            "chart": chart_json,
+            "title": op.title or f"{', '.join(names)} Comparison",
+            "ntwk_name": names[0],
+        }
+
     return {"type": "error", "message": f"不支持的操作: {op.action}"}
 
 
@@ -555,6 +681,124 @@ def upload():
     except Exception as e:
         os.unlink(tmp_path)
         return jsonify({"error": f"解析失败: {str(e)}"}), 400
+
+
+@app.route("/api/upload/batch", methods=["POST"])
+def upload_batch():
+    """批量上传多个 Touchstone 文件。"""
+    if "files" not in request.files:
+        return jsonify({"error": "没有选择文件"}), 400
+
+    files = request.files.getlist("files")
+    if not files or all(f.filename == "" for f in files):
+        return jsonify({"error": "文件列表为空"}), 400
+
+    session_id = request.form.get("session", "default")
+    if session_id not in sessions:
+        sessions[session_id] = {"networks": {}}
+
+    results = []
+    for file in files:
+        if file.filename == "":
+            continue
+        suffix = Path(file.filename).suffix
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+            file.save(tmp.name)
+            tmp_path = tmp.name
+        try:
+            ntwk = rf.Network(tmp_path)
+            name = Path(file.filename).stem
+            sessions[session_id]["networks"][name] = {
+                "path": tmp_path,
+                "nports": ntwk.nports,
+                "f_min": float(ntwk.f[0]),
+                "f_max": float(ntwk.f[-1]),
+                "npoints": len(ntwk.f),
+                "params": sp.list_params(ntwk),
+            }
+            results.append({
+                "ok": True,
+                "name": name,
+                "nports": ntwk.nports,
+                "f_min": float(ntwk.f[0]),
+                "f_max": float(ntwk.f[-1]),
+                "npoints": len(ntwk.f),
+                "params": sp.list_params(ntwk),
+            })
+        except Exception as e:
+            os.unlink(tmp_path)
+            results.append({"ok": False, "name": file.filename, "error": str(e)})
+
+    return jsonify({
+        "ok": True,
+        "loaded": [r for r in results if r.get("ok")],
+        "failed": [r for r in results if not r.get("ok")],
+        "total": len(results),
+    })
+
+
+@app.route("/api/upload/glob", methods=["POST"])
+def upload_glob():
+    """通过通配符模式批量加载本地文件。
+    接收 JSON: { "pattern": "data/*.s2p", "session": "default" }
+    """
+    data = request.get_json()
+    pattern = data.get("pattern", "").strip()
+    session_id = data.get("session", "default")
+
+    if not pattern:
+        return jsonify({"error": "请提供文件匹配模式，例如 data/*.s2p"}), 400
+
+    import glob as globmod
+    matches = globmod.glob(pattern, recursive=True)
+    if not matches:
+        # 尝试递归搜索
+        matches = globmod.glob(f"**/{pattern}", recursive=True)
+
+    if not matches:
+        return jsonify({"error": f"未找到匹配 '{pattern}' 的文件"}), 404
+
+    if session_id not in sessions:
+        sessions[session_id] = {"networks": {}}
+
+    results = []
+    for path in matches:
+        try:
+            ntwk = rf.Network(path)
+            name = os.path.splitext(os.path.basename(path))[0]
+            # 处理重名：添加后缀
+            if name in sessions[session_id]["networks"]:
+                base = name
+                idx = 2
+                while f"{base}_{idx}" in sessions[session_id]["networks"]:
+                    idx += 1
+                name = f"{base}_{idx}"
+            sessions[session_id]["networks"][name] = {
+                "path": path,
+                "nports": ntwk.nports,
+                "f_min": float(ntwk.f[0]),
+                "f_max": float(ntwk.f[-1]),
+                "npoints": len(ntwk.f),
+                "params": sp.list_params(ntwk),
+            }
+            results.append({
+                "ok": True,
+                "name": name,
+                "nports": ntwk.nports,
+                "f_min": float(ntwk.f[0]),
+                "f_max": float(ntwk.f[-1]),
+                "npoints": len(ntwk.f),
+                "params": sp.list_params(ntwk),
+            })
+        except Exception as e:
+            results.append({"ok": False, "name": os.path.basename(path), "error": str(e)})
+
+    return jsonify({
+        "ok": True,
+        "loaded": [r for r in results if r.get("ok")],
+        "failed": [r for r in results if not r.get("ok")],
+        "total": len(results),
+    })
 
 
 @app.route("/api/networks", methods=["GET"])
@@ -724,6 +968,163 @@ def export_csv():
     bio.seek(0)
     return send_file(bio, mimetype="text/csv", as_attachment=True,
                      download_name=f"{network_name}_export.csv")
+
+
+@app.route("/api/cascade/chain", methods=["POST"])
+def cascade_chain_api():
+    """
+    链式级联多个网络。
+    接收 JSON: { "session": "default", "chain": ["LNA", "BPF", "AMP"], "result_name": "LNA_BPF_AMP" }
+    返回级联后的网络信息。
+    """
+    data = request.get_json()
+    session_id = data.get("session", "default")
+    chain_names = data.get("chain", [])
+    result_name = data.get("result_name", "_".join(chain_names))
+
+    if len(chain_names) < 2:
+        return jsonify({"error": "级联需要至少 2 个网络名称"}), 400
+
+    ses = sessions.get(session_id, {}).get("networks", {})
+    networks = []
+    for name in chain_names:
+        ntwk = _get_network(session_id, name)
+        if ntwk is None:
+            return jsonify({"error": f"找不到网络 '{name}'，已加载: {list(ses.keys())}"}), 404
+        networks.append(ntwk)
+
+    try:
+        result = sp.cascade_chain(networks)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        return jsonify({"error": f"级联失败: {e}"}), 500
+
+    # 保存到 session
+    tmp_path = tempfile.mktemp(suffix=f".s{result.nports}p")
+    result.write_touchstone(tmp_path)
+    ses[result_name] = {
+        "path": tmp_path,
+        "nports": result.nports,
+        "f_min": float(result.f[0]),
+        "f_max": float(result.f[-1]),
+        "npoints": len(result.f),
+        "params": sp.list_params(result),
+    }
+    sessions[session_id]["networks"][result_name] = ses[result_name]
+
+    return jsonify({
+        "ok": True,
+        "name": result_name,
+        "chain": chain_names,
+        "nports": result.nports,
+        "f_min": float(result.f[0]),
+        "f_max": float(result.f[-1]),
+        "npoints": len(result.f),
+        "params": sp.list_params(result),
+    })
+
+
+@app.route("/api/compare", methods=["POST"])
+def compare_networks():
+    """
+    多文件对比视图。
+    接收 JSON: {
+        "session": "default",
+        "networks": ["LNA", "BPF", "AMP"],
+        "params": ["S21"],
+        "chart_type": "db",
+        "show_diff": true,
+        "reference": "LNA",
+        "title": "对比标题"
+    }
+    返回 Plotly JSON 图表 + 差异统计
+    """
+    data = request.get_json()
+    session_id = data.get("session", "default")
+    network_names = data.get("networks", [])
+    param_strs = data.get("params", ["S21"])
+    chart_type = data.get("chart_type", "db")
+    show_diff = data.get("show_diff", True)
+    ref_name = data.get("reference", "")
+    title = data.get("title", "Multi-File Comparison")
+    freq_range = data.get("freq_range")
+
+    if len(network_names) < 2:
+        return jsonify({"error": "对比至少需要 2 个网络"}), 400
+
+    # 收集网络对象
+    networks = []
+    names = []
+    for name in network_names:
+        ntwk = _get_network(session_id, name)
+        if ntwk is None:
+            return jsonify({"error": f"找不到网络 '{name}'"}), 404
+        if freq_range:
+            ntwk = sp.slice_freq(ntwk, freq_range[0], freq_range[1])
+        networks.append(ntwk)
+        names.append(name)
+
+    # 找参考索引
+    reference_idx = 0
+    if ref_name and ref_name in names:
+        reference_idx = names.index(ref_name)
+
+    # 解析参数
+    params = []
+    for ps in param_strs:
+        ps = ps.strip().upper()
+        if ps.startswith("S") and len(ps) == 3:
+            m = int(ps[1]) - 1
+            n = int(ps[2]) - 1
+            params.append((m, n))
+    if not params:
+        params = [(1, 0)]  # 默认 S21
+
+    try:
+        # 插值到共同频率
+        interpolated = sp.interpolate_to_common_freq(
+            networks, npoints=max(len(n.f) for n in networks)
+        )
+
+        if chart_type == "smith":
+            fig = sp.plot_multi_smith(interpolated, names=names, param=params[0], title=title)
+        elif len(params) == 1 and chart_type == "db":
+            fig = sp.plot_multi_db(
+                interpolated, names=names, param=params[0],
+                title=title, show_diff=show_diff, reference_idx=reference_idx,
+            )
+        else:
+            fig = sp.plot_compare(
+                interpolated, names=names, params=params,
+                title=title, show_diff=show_diff, reference_idx=reference_idx,
+            )
+
+        # 计算差异统计
+        stats = None
+        if show_diff:
+            try:
+                stats = sp.compute_diff_stats(interpolated, params[0], reference_idx)
+            except Exception:
+                pass
+
+        chart_json = json.loads(json.dumps(
+            {"data": fig.data, "layout": fig.layout},
+            cls=plotly.utils.PlotlyJSONEncoder,
+        ))
+
+        return jsonify({
+            "ok": True,
+            "chart": chart_json,
+            "title": title,
+            "diff_stats": stats,
+        })
+
+    except ValueError as e:
+        return jsonify({"error": f"频率范围不兼容: {e}"}), 400
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/export/touchstone", methods=["POST"])

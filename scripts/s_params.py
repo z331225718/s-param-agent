@@ -231,6 +231,156 @@ def renormalize(ntwk: rf.Network, z0: float) -> rf.Network:
     return ntwk.renormalize(z0)
 
 
+def cascade_chain(networks: List[rf.Network]) -> rf.Network:
+    """
+    链式级联多个网络 (A → B → C → ...)。
+    自动验证端口匹配：前一网络输出端口数必须等于后一网络输入端口数。
+
+    Args:
+        networks: 按顺序排列的网络列表 [LNA, BPF, AMP]
+    Returns:
+        级联后的复合网络
+    Raises:
+        ValueError: 端口不匹配时抛出
+    """
+    if len(networks) < 2:
+        raise ValueError(f"级联需要至少 2 个网络，提供了 {len(networks)} 个")
+
+    result = networks[0]
+    for i, nxt in enumerate(networks[1:], 1):
+        # scikit-rf ** 操作符要求：前一网络的输出端口数 == 后一网络的输入端口数
+        # 对于二端口级联：ntwk_a (port1=out) ** ntwk_b (port0=in)
+        try:
+            result = result ** nxt
+        except Exception as e:
+            raise ValueError(
+                f"级联失败: {networks[i-1].name} (端口{networks[i-1].nports}) → "
+                f"{nxt.name} (端口{nxt.nports}): {e}"
+            )
+    result.name = " → ".join(n.name for n in networks)
+    return result
+
+
+def load_networks_batch(paths: List[str]) -> List[rf.Network]:
+    """
+    批量加载多个 Touchstone 文件。
+
+    Args:
+        paths: 文件路径列表
+    Returns:
+        成功加载的 Network 对象列表（跳过失败的文件并打印警告）
+    """
+    networks = []
+    for p in paths:
+        try:
+            ntwk = load_ntwk(p)
+            networks.append(ntwk)
+        except Exception as e:
+            import warnings
+            warnings.warn(f"跳过无法加载的文件 {p}: {e}")
+    return networks
+
+
+def find_common_freq_range(networks: List[rf.Network]) -> Tuple[float, float]:
+    """
+    找到多个网络频率范围的交集。
+
+    Returns:
+        (f_min, f_max) 共有的频率范围 (Hz)
+    """
+    f_min = max(n.f[0] for n in networks)
+    f_max = min(n.f[-1] for n in networks)
+    if f_min >= f_max:
+        raise ValueError(
+            f"网络之间没有共同的频率范围。"
+            f"范围: {[(n.f[0]/1e9, n.f[-1]/1e9) for n in networks]}"
+        )
+    return (f_min, f_max)
+
+
+def interpolate_to_common_freq(
+    networks: List[rf.Network],
+    npoints: int = None,
+    freq_array: np.ndarray = None,
+) -> List[rf.Network]:
+    """
+    将多个网络插值到共同的频率网格，便于逐点对比。
+
+    Args:
+        networks: 网络列表
+        npoints: 目标频率点数（使用共同范围的等间距网格）
+        freq_array: 自定义频率数组 (Hz)，优先级高于 npoints
+    Returns:
+        插值后的网络列表（新对象，不修改原网络）
+    """
+    if freq_array is not None:
+        target_freq = freq_array
+    elif npoints is not None:
+        f_min, f_max = find_common_freq_range(networks)
+        target_freq = np.linspace(f_min, f_max, npoints)
+    else:
+        # 使用第一个网络的频率作为参考
+        target_freq = networks[0].f
+
+    freq_obj = rf.Frequency.from_f(target_freq, unit="hz")
+    return [n.interpolate(freq_obj) for n in networks]
+
+
+def compute_diff_stats(
+    networks: List[rf.Network],
+    param: Tuple[int, int] = (1, 0),
+    reference_idx: int = 0,
+) -> dict:
+    """
+    计算多个网络之间同一 S 参数的差异统计。
+
+    Args:
+        networks: 已插值到同一频率网格的网络列表
+        param: S 参数索引 (m, n)
+        reference_idx: 作为参考基准的网络索引（默认第一个）
+    Returns:
+        {
+            "param": "S21",
+            "reference": "LNA",
+            "comparisons": [
+                {"name": "BPF", "mean_diff_db": 1.2, "max_diff_db": 3.5,
+                 "min_diff_db": 0.1, "rms_diff_db": 1.8}
+            ],
+            "common_freq_ghz": [f1, f2, ...],
+            "diff_traces": [(name, diff_db_array), ...]
+        }
+    """
+    m, n = param
+    param_str = f"S{m+1}{n+1}"
+    ref = networks[reference_idx]
+    ref_db = ref.s_db[:, m, n]
+    freq_ghz = ref.f / _FREQ_UNIT
+
+    comparisons = []
+    diff_traces = []
+    for i, ntwk in enumerate(networks):
+        if i == reference_idx:
+            continue
+        db = ntwk.s_db[:, m, n]
+        diff = db - ref_db
+        comparisons.append({
+            "name": ntwk.name,
+            "mean_diff_db": float(np.mean(diff)),
+            "max_diff_db": float(np.max(np.abs(diff))),
+            "min_diff_db": float(np.min(diff)),
+            "rms_diff_db": float(np.sqrt(np.mean(diff ** 2))),
+        })
+        diff_traces.append((ntwk.name, diff))
+
+    return {
+        "param": param_str,
+        "reference": ref.name,
+        "comparisons": comparisons,
+        "common_freq_ghz": freq_ghz.tolist(),
+        "diff_traces": diff_traces,
+    }
+
+
 def _parse_freq_str(s: str) -> float:
     """解析 '2GHz', '2.4g', '500mhz', '500M' 为 Hz 数值。"""
     s = s.strip().lower().replace(" ", "")
@@ -704,8 +854,19 @@ def plot_multi_db(
     figsize: Tuple[int, int] = (1100, 600),
     save_to: str = None,
     show: bool = False,
+    show_diff: bool = False,
+    reference_idx: int = 0,
 ) -> go.Figure:
-    """多个网络文件的同一参数 dB 对比。"""
+    """
+    多个网络文件的同一参数 dB 对比。
+
+    Args:
+        networks: 网络列表（若 show_diff=True，需已插值到同一频率网格）
+        names: 图例名称列表
+        param: S 参数索引 (m, n)
+        show_diff: 是否显示相对于参考网络的差异曲线
+        reference_idx: 差异计算的参考网络索引
+    """
     if names is None:
         names = [n.name for n in networks]
 
@@ -725,6 +886,59 @@ def plot_multi_db(
             customdata=_build_hover(freq_ghz, db, "dB"),
         ))
 
+    # 差异曲线
+    if show_diff and len(networks) >= 2:
+        ref = networks[reference_idx]
+        ref_db = ref.s_db[:, param[0], param[1]]
+        ref_freq = ref.f / _FREQ_UNIT
+        diff_colors = ["#e377c2", "#bcbd22", "#8c564b", "#7f7f7f"]
+        for i, ntwk in enumerate(networks):
+            if i == reference_idx:
+                continue
+            db = ntwk.s_db[:, param[0], param[1]]
+            diff = db - ref_db
+            dcolor = diff_colors[(i - 1) % len(diff_colors)]
+            diff_name = f"Δ ({names[i]} − {names[reference_idx]})"
+            fig.add_trace(go.Scatter(
+                x=ref_freq,
+                y=diff,
+                mode="lines",
+                name=diff_name,
+                line=dict(color=dcolor, width=1.2, dash="dot"),
+                yaxis="y2",
+                hovertemplate="%{customdata}",
+                customdata=_build_hover(ref_freq, diff, "Δ dB"),
+            ))
+
+        # 统计标注
+        stats = compute_diff_stats(networks, param, reference_idx)
+        annot_lines = [f"<b>差异统计 (vs {stats['reference']})</b>"]
+        for c in stats["comparisons"]:
+            annot_lines.append(
+                f"{c['name']}: mean={c['mean_diff_db']:+.2f} dB, "
+                f"max|Δ|={c['max_diff_db']:.2f} dB, RMS={c['rms_diff_db']:.2f} dB"
+            )
+        fig.add_annotation(
+            x=0.02, y=0.98, xref="paper", yref="paper",
+            text="<br>".join(annot_lines),
+            showarrow=False,
+            bgcolor="rgba(26,26,46,0.9)",
+            font=dict(color="#c0c0c0", size=11, family="monospace"),
+            align="left",
+            bordercolor="#444",
+            borderwidth=1,
+            borderpad=8,
+        )
+
+        fig.update_layout(
+            yaxis2=dict(
+                title="Δ (dB)",
+                overlaying="y",
+                side="right",
+                showgrid=False,
+            ),
+        )
+
     param_str = f"S{param[0]+1}{param[1]+1}"
     fig.update_layout(
         title=dict(text=title, x=0.5, font=dict(size=18)),
@@ -734,7 +948,7 @@ def plot_multi_db(
         height=figsize[1],
         hovermode="closest",
         template="plotly_white",
-        legend=dict(orientation="h", yanchor="top", y=-0.15, xanchor="center", x=0.5),
+        legend=dict(orientation="h", yanchor="top", y=-0.22, xanchor="center", x=0.5),
     )
 
     if save_to:
@@ -789,6 +1003,132 @@ def plot_multi_smith(
         yaxis=dict(range=[-1.1, 1.1]),
         width=figsize[0],
         height=figsize[1],
+        hovermode="closest",
+        template="plotly_white",
+        legend=dict(orientation="h", yanchor="top", y=-0.12, xanchor="center", x=0.5),
+    )
+
+    if save_to:
+        fig.write_html(save_to, include_plotlyjs="cdn")
+    if show:
+        fig.show()
+    return fig
+
+
+def plot_compare(
+    networks: List[rf.Network],
+    names: List[str] = None,
+    params: List[Tuple[int, int]] = None,
+    title: str = "Multi-File Multi-Parameter Comparison",
+    figsize: Tuple[int, int] = (1200, 700),
+    show_diff: bool = True,
+    reference_idx: int = 0,
+    save_to: str = None,
+    show: bool = False,
+) -> go.Figure:
+    """
+    全功能对比视图：多文件 × 多参数，带差异统计。
+    自动插值到共同频率网格。
+
+    Args:
+        networks: 网络列表（可不同频率网格，自动插值）
+        names: 图例名称
+        params: 要对比的参数列表，默认取所有网络共有的第一个传输参数
+        show_diff: 显示差异曲线
+        reference_idx: 差异参考基准
+    """
+    if len(networks) < 2:
+        raise ValueError(f"对比至少需要 2 个网络，提供了 {len(networks)} 个")
+
+    if names is None:
+        names = [n.name for n in networks]
+
+    # 自动插值到共同频率
+    try:
+        interpolated = interpolate_to_common_freq(networks, npoints=max(len(n.f) for n in networks))
+    except ValueError:
+        # 无共同范围 → 使用各自频率直接画
+        interpolated = networks
+        show_diff = False
+
+    # 默认参数：取第一个传输参数 S21
+    if params is None:
+        for m in range(interpolated[0].nports):
+            for n_val in range(interpolated[0].nports):
+                if m != n_val:
+                    params = [(m, n_val)]
+                    break
+            if params:
+                break
+        if params is None:
+            params = [(0, 0)]
+
+    from plotly.subplots import make_subplots
+
+    n_params = len(params)
+    subplot_titles = [f"S{p[0]+1}{p[1]+1} (dB)" for p in params]
+    if show_diff:
+        subplot_titles += [f"Δ S{p[0]+1}{p[1]+1} (dB)" for p in params]
+
+    n_cols = min(n_params, 3)
+    n_rows = (n_params + n_cols - 1) // n_cols
+    if show_diff:
+        n_rows *= 2
+
+    fig = make_subplots(
+        rows=n_rows, cols=n_cols,
+        subplot_titles=subplot_titles,
+        vertical_spacing=0.10,
+    )
+
+    ref_interp = interpolated[reference_idx]
+
+    for pi, (m, n_val) in enumerate(params):
+        row_main = (pi // n_cols) * (2 if show_diff else 1) + 1
+        col = pi % n_cols + 1
+
+        # 主图：dB 幅度
+        for i, ntwk in enumerate(interpolated):
+            freq_ghz = ntwk.f / _FREQ_UNIT
+            db = ntwk.s_db[:, m, n_val]
+            color = _DEFAULT_COLORS[i % len(_DEFAULT_COLORS)]
+            fig.add_trace(go.Scatter(
+                x=freq_ghz, y=db, mode="lines", name=names[i],
+                line=dict(color=color, width=1.8),
+                hovertemplate=f"<b>{names[i]}</b><br>%{{x:.4f}} GHz<br>%{{y:.3f}} dB<extra></extra>",
+                legendgroup=names[i],
+                showlegend=(pi == 0),
+            ), row=row_main, col=col)
+
+        # 差异图
+        if show_diff:
+            diff_row = row_main + 1
+            ref_db = ref_interp.s_db[:, m, n_val]
+            ref_freq = ref_interp.f / _FREQ_UNIT
+            for i, ntwk in enumerate(interpolated):
+                if i == reference_idx:
+                    continue
+                db = ntwk.s_db[:, m, n_val]
+                diff = db - ref_db
+                dcolor = _DEFAULT_COLORS[i % len(_DEFAULT_COLORS)]
+                fig.add_trace(go.Scatter(
+                    x=ref_freq, y=diff, mode="lines",
+                    name=f"Δ ({names[i]} − {names[reference_idx]})",
+                    line=dict(color=dcolor, width=1.2, dash="dot"),
+                    hovertemplate=f"<b>Δ ({names[i]})</b><br>%{{x:.4f}} GHz<br>%{{y:.3f}} dB<extra></extra>",
+                    legendgroup=f"diff_{names[i]}",
+                    showlegend=(pi == 0),
+                ), row=diff_row, col=col)
+
+    fig.update_xaxes(title_text="Frequency (GHz)", row=n_rows, col=1)
+    fig.update_yaxes(title_text="S-Parameter (dB)")
+    if show_diff:
+        fig.update_yaxes(title_text="Δ (dB)", row=n_rows, col=1)
+
+    fig.update_layout(
+        title=dict(text=title, x=0.5, font=dict(size=18)),
+        width=figsize[0],
+        height=figsize[1] * (n_rows / 2),
         hovermode="closest",
         template="plotly_white",
         legend=dict(orientation="h", yanchor="top", y=-0.12, xanchor="center", x=0.5),

@@ -19,17 +19,22 @@ from dataclasses import dataclass, field
 @dataclass
 class SParamOp:
     """单个 S 参数操作"""
-    action: str                    # load | info | plot | cascade | deembed | slice | export | list
+    action: str                    # load | load_batch | info | plot | cascade | cascade_chain | deembed | slice | export | list | compare
     target: str = ""               # 文件路径 or 网络名称
     params: List[str] = field(default_factory=list)   # ["S11", "S21"]
     chart_type: str = ""           # db | deg | smith | vswr | groupdelay | mag
     freq_range: Optional[Tuple[float, float]] = None  # (start_Hz, stop_Hz)
     cascade_with: str = ""         # 级联的第二个网络
+    chain: List[str] = field(default_factory=list)    # 链式级联的多个网络 ["LNA", "BPF", "AMP"]
     deembed_fixture: str = ""      # 去嵌夹具
     export_format: str = ""        # csv | touchstone | html
     title: str = ""                # 自定义图表标题
     result_name: str = ""          # 结果命名
     dual_axis: bool = False        # 是否使用双Y轴（左右两个坐标系）
+    batch_pattern: str = ""        # 批量加载的通配符模式
+    compare_networks: List[str] = field(default_factory=list)  # 对比的网络列表
+    reference: str = ""            # 差异对比的参考网络
+    show_diff: bool = True         # 是否显示差异
 
 
 # ──────────────────────────────────────────────
@@ -40,10 +45,14 @@ LOAD_WORDS = ["读", "读取", "加载", "载入", "打开", "load", "open", "re
 INFO_WORDS = ["看", "看看", "查看", "信息", "概览", "基本信息", "info", "summary", "describe"]
 PLOT_WORDS = ["画", "绘制", "显示", "plot", "draw", "show", "chart", "图"]
 CASCADE_WORDS = ["级联", "串接", "连接", "串联", "cascade", "connect", "chain"]
+CHAIN_WORDS = ["→", "->", ">>", "then", "然后接", "再接", "接着接"]
 DEEMBED_WORDS = ["去嵌", "去嵌入", "反嵌", "deembed", "de-embed"]
 SLICE_WORDS = ["截", "截取", "裁剪", "切片", "只看", "只保留", "slice", "crop", "cut", "keep"]
 EXPORT_WORDS = ["导出", "保存", "下载", "输出", "export", "save", "download", "output"]
 LIST_WORDS = ["列出", "有哪些", "哪些文件", "文件列表", "list", "show files"]
+BATCH_WORDS = ["批量加载", "批量读取", "加载所有", "加载多个", "batch load", "load all", "load batch"]
+COMPARE_WORDS = ["对比", "比较", "对比图", "比较图", "放在一起", "叠加", "compare", "overlay", "diff"]
+GLOB_PATTERN = re.compile(r'["\']?([\w*?./\\-]+\.s\dp)["\']?', re.IGNORECASE)
 
 CHART_DB = ["db", "dB", "分贝", "幅度", "增益", "损耗", "magnitude", "插损", "回损"]
 CHART_DEG = ["相位", "角度", "phase", "deg", "degree", "angle"]
@@ -142,6 +151,19 @@ def _parse_segment(seg: str, available_files: List[str] = None) -> Optional[SPar
 
     op = SParamOp(action=action)
 
+    # ── 检测链式级联 (A → B → C) ──
+    chain_result = _detect_chain(seg)
+    if chain_result and len(chain_result) >= 2:
+        op.action = "cascade_chain"
+        op.chain = chain_result
+        op.target = chain_result[0]
+        return op
+
+    # ── 检测批量加载 glob 模式 ──
+    glob_match = re.search(r'["\']?([\w*?./\\-]+\.s\dp)["\']?', seg)
+    if glob_match and any(c in seg for c in "*?[]"):
+        op.batch_pattern = glob_match.group(1)
+
     # ── 提取文件 ──
     file_matches = SNP_PATTERN.findall(seg) or FILE_PATTERN.findall(seg)
     if file_matches:
@@ -206,8 +228,12 @@ def _parse_segment(seg: str, available_files: List[str] = None) -> Optional[SPar
 
 
 def _detect_action(text: str) -> str:
+    if any(w in text for w in BATCH_WORDS):
+        return "load_batch"
     if any(w in text for w in LOAD_WORDS):
         return "load"
+    if any(w in text for w in COMPARE_WORDS):
+        return "compare"
     if any(w in text for w in CASCADE_WORDS):
         return "cascade"
     if any(w in text for w in DEEMBED_WORDS):
@@ -223,6 +249,31 @@ def _detect_action(text: str) -> str:
     if any(w in text for w in LIST_WORDS):
         return "list"
     return ""
+
+
+def _detect_chain(text: str) -> Optional[List[str]]:
+    """
+    检测链式级联语法: LNA → BPF → AMP 或 LNA -> BPF -> AMP
+    返回网络名称列表。
+    """
+    # 尝试各种链式分隔符
+    for sep in ["→", "->", ">>"]:
+        if sep in text:
+            parts = [p.strip() for p in text.split(sep)]
+            # 过滤空段和明显不是网络名的段
+            names = []
+            for p in parts:
+                # 提取可能的网络名（单词或文件名）
+                p = p.strip()
+                # 移除末尾的扩展名
+                p = re.sub(r"\.s\dp$", "", p, flags=re.IGNORECASE)
+                # 过滤包含中文标点的纯描述性文本
+                if p and not re.search(r"[，。；！？、]", p) and len(p) < 50:
+                    # 可能是一个网络名
+                    names.append(p)
+            if len(names) >= 2:
+                return names
+    return None
 
 
 def _detect_chart_type(text: str) -> str:
@@ -299,7 +350,7 @@ def _describe_op(op: SParamOp) -> str:
         parts.append(op.target)
     if op.params:
         parts.append(", ".join(op.params))
-    if op.chart_type and op.action == "plot":
+    if op.chart_type and op.action in ("plot", "compare"):
         tag = op.chart_type
         if op.dual_axis:
             tag += "|dualY"
@@ -310,6 +361,14 @@ def _describe_op(op: SParamOp) -> str:
         parts.append(f"{f0/1e9:.2f}–{f1/1e9:.2f} GHz")
     if op.cascade_with:
         parts.append(f"+ {op.cascade_with}")
+    if op.chain:
+        parts.append(" → ".join(op.chain))
+    if op.compare_networks:
+        parts.append("vs " + ", ".join(op.compare_networks))
+    if op.batch_pattern:
+        parts.append(f"glob:{op.batch_pattern}")
+    if op.reference:
+        parts.append(f"ref:{op.reference}")
     if op.export_format:
         parts.append(f"→ {op.export_format}")
     return " ".join(parts)
