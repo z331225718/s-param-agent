@@ -598,21 +598,13 @@ class SParamGUI:
 #  文件头快速解析（同 app.py）
 # ═══════════════════════════════════════════
 
-def _parse_float(s: str) -> float:
-    """解析浮点数，兼容 Fortran D 指数记法 (1.0D+09)。"""
-    return float(s.replace("D", "E").replace("d", "e"))
-
-
 def _read_header(path: str) -> dict:
     import re as _re
-    # 数据行：以可选空格、可选正负号、数字开头
-    data_re = _re.compile(r"^\s*[-+]?\d")
+    data_re = _re.compile(r"^\s*-?\d")
 
     freq_unit = "ghz"
     nports = 0
     first_data_line = None
-    # 记录 # 行之后才算数（过滤注释里的数字）
-    past_option_line = False
 
     with open(path, "r", encoding="utf-8", errors="ignore") as f:
         for line in f:
@@ -620,7 +612,6 @@ def _read_header(path: str) -> dict:
             if not stripped or stripped.startswith("!"):
                 continue
             if stripped.startswith("#"):
-                past_option_line = True
                 parts = stripped.split()
                 freq_str = parts[1].lower() if len(parts) > 1 else "ghz"
                 if "ghz" in freq_str: freq_unit = "ghz"
@@ -628,7 +619,7 @@ def _read_header(path: str) -> dict:
                 elif "khz" in freq_str: freq_unit = "khz"
                 elif "hz" in freq_str: freq_unit = "hz"
                 continue
-            if past_option_line and data_re.match(stripped):
+            if data_re.match(stripped):
                 first_data_line = stripped
                 break
 
@@ -650,7 +641,7 @@ def _read_header(path: str) -> dict:
 
     freq_mul = {"ghz": 1e9, "mhz": 1e6, "khz": 1e3, "hz": 1.0}.get(freq_unit, 1e9)
     try:
-        f_min = _parse_float(cols[0]) * freq_mul
+        f_min = float(cols[0]) * freq_mul
     except Exception:
         f_min = 0.0
 
@@ -661,7 +652,7 @@ def _read_header(path: str) -> dict:
             if data_re.match(line):
                 npoints += 1
                 try:
-                    last_freq = _parse_float(line.split()[0])
+                    last_freq = float(line.split()[0])
                 except Exception:
                     pass
 
