@@ -163,13 +163,17 @@ fig.add_trace(go.Scatter(
 ))
 
 fig.update_layout(
-    template='plotly_white',
-    width=1000, height=550,
+    template='plotly_dark',
+    paper_bgcolor='#1a1a2e', plot_bgcolor='#16213e',
+    font=dict(color='#c0c0c0'),
     hovermode='closest',
     legend=dict(orientation='h', yanchor='top', y=-0.15, xanchor='center', x=0.5),
-    title=dict(text='S-Parameter Magnitude', x=0.5, font=dict(size=18)),
+    title=dict(text='S-Parameter Magnitude', x=0.5, font=dict(size=18, color='#e0e0e0')),
     xaxis_title='Frequency (GHz)',
     yaxis_title='Magnitude (dB)',
+    xaxis=dict(gridcolor='#2a2a4a', zerolinecolor='#444'),
+    yaxis=dict(gridcolor='#2a2a4a', zerolinecolor='#444'),
+    margin=dict(l=60, r=30, t=60, b=50),
 )
 ```
 
@@ -308,8 +312,8 @@ fig.update_xaxes(
     type='log',
     tickformat='.0e',
     dtick=1,
-    showgrid=True, gridcolor='#c0c0c0',
-    minor=dict(showgrid=True, gridcolor='#e0e0e0', griddash='dash', showticklabels=False),
+    showgrid=True, gridcolor='#2a2a4a',
+    minor=dict(showgrid=True, gridcolor='#1e2a3e', griddash='dash', showticklabels=False),
     exponentformat='power', showexponent='all',
 )
 fig.update_yaxes(exponentformat='power', showexponent='all')
