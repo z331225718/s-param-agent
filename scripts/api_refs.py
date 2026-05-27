@@ -115,58 +115,15 @@ def build_fix_prompt(error_msg: str) -> str:
 # ── API 速查（精简版，注入 system prompt） ─────────────────────
 
 def build_api_prompt() -> str:
-    """生成一段精简的 API 速查文本（~1200 chars），注入 LLM system prompt。"""
-    # 预定义的"高频必知"API——不搜索全库，只选最常用的
-    must_know = [
-        "plotly.Figure.update_layout",
-        "plotly.Figure.add_trace",
-        "plotly.layout(xaxis_type)",
-        "plotly.layout(yaxis_type)",
-        "plotly.❌→✅ update_xaxis",
-        "plotly.make_subplots",
-        "skrf.Network.s_db",
-        "skrf.Network.s_deg",
-        "skrf.Network.z",
-        "skrf.Network.s_vswr",
-        "skrf.Network.f",
-        "skrf.❌→✅ s_db索引",
-        "skrf.❌→✅ cascade",
-        "skrf.❌→✅ slice",
-    ]
-
-    lines = ["## ⚠️ 高频 API 速查（生成代码前务必参考）", ""]
-    for name in must_know:
-        results = search(name, top_k=1)
-        if results:
-            r = results[0]
-            desc = r.get("desc", "")
-            sig = r.get("sig", "")
-            if desc and sig:
-                lines.append(f"- `{sig}` — {desc}")
-            elif desc:
-                lines.append(f"- {desc}")
-
-    lines.append("")
-    lines.append("### plotly 铁律")
-    lines.append("- ❌ 没有 update_xaxis / update_yaxis（单数）")
-    lines.append("- ✅ 用 update_xaxes / update_yaxes（复数）或 update_layout(xaxis_type=)")
-    lines.append("- ✅ log 轴: `fig.update_layout(xaxis_type='log', yaxis_type='log')`")
-    lines.append("- **每张图必须加**: `fig.update_xaxes(exponentformat='power',showexponent='all')`")
-    lines.append("  否则出现 μ/k/B 等 SI 前缀（如 1B 替代 1e9）！同样 y 轴也要。")
-    lines.append("")
-    lines.append("### 端口终端（短路/开路/负载）")
-    lines.append("- **不要用 S 参数手推公式！** 直接用 Z 参数:")
-    lines.append("  `z=ntwk.z; ZL=0; zin=z[:,0,0]-(z[:,0,1]*z[:,1,0])/(z[:,1,1]+ZL)`")
-    lines.append("- 短路 ZL=0; 开路 ZL=np.inf; 负载 ZL=50")
-    lines.append("- `np.abs(zin)` 取幅度，log轴需要所有值 > 0")
-    lines.append("")
-    lines.append("### skrf 铁律")
-    lines.append("- **频率必须转GHz**: `freq_ghz = ntwk.f / 1e9`，直接用 ntwk.f 会导致 X轴显示 1B/2B！")
-    lines.append("- S参数是3D数组: `ntwk.s_db[:, m, n]` 不是 `[m, n]`")
-    lines.append("- 切片: `ntwk['2-4ghz']` 不是 `.slice()`")
-    lines.append("- 级联: `ntwk1 ** ntwk2` 不是 `.cascade()`")
-
-    return "\n".join(lines)
+    """生成精简 API 速查（不重复系统 prompt 已有规则）。"""
+    return """## 补充 API 速查
+- plotly 用 update_xaxes/update_yaxes（复数），不是 update_xaxis
+- make_subplots(specs=[[{'secondary_y':True}]]) 创建双Y轴
+- add_trace(trace, row=1, col=1, secondary_y=False) 添加曲线到子图
+- s_db[:,m,n] 3D索引取S参数dB值；s_deg[:,m,n] 取相位
+- ntwk.z[:,p,p] 取端口阻抗；ntwk.s_vswr[:,p,p] 取VSWR
+- 级联: ntwk1 ** ntwk2；频率切片: ntwk['2-4ghz']
+- 端口终端用Z参数: zin = z[:,0,0] - z[:,0,1]*z[:,1,0]/(z[:,1,1]+ZL)"""
 
 
 # ── 索引统计 ───────────────────────────────────────────────────

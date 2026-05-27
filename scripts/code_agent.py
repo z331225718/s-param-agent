@@ -127,7 +127,7 @@ from plotly.subplots import make_subplots
   所有 X 轴必须用 `freq_ghz = ntwk.f / 1e9`，然后 `x=freq_ghz`。
   同时设 `xaxis_title='Frequency (GHz)'`。
 - **S/Z/Y 参数是 3D 数组**：必须用 `[:, m, n]` 索引，不是 `[m, n]`！
-- **对数频率轴必须按以下规则设置**（每张图都必须加）：
+- **频率轴必须用对数坐标**（Smith 图除外），按此规则：
   ```python
   fig.update_xaxes(
       type='log',
