@@ -304,7 +304,7 @@ def _inject_log_scale(code: str) -> str:
 
 # ── 沙箱执行 ───────────────────────────────────────────────────
 
-def execute_code(code: str, file_paths: dict = None, networks: dict = None, timeout_sec: int = 15) -> dict:
+def execute_code(code: str, file_paths: dict = None, networks: dict = None, timeout_sec: int = 30) -> dict:
     """
     在子进程中执行代码（用 subprocess 隔离，跨平台安全）。
 
@@ -548,7 +548,7 @@ def generate_code(user_text: str, file_path: str = None, networks: dict = None) 
                     "Content-Type": "application/json",
                 },
             )
-            with urllib.request.urlopen(req, timeout=25) as resp:
+            with urllib.request.urlopen(req, timeout=60) as resp:
                 result = json.loads(resp.read().decode("utf-8"))
         except Exception as e:
             return {"error": f"LLM 调用失败: {e}", "retries": attempt - 1, "history": history}

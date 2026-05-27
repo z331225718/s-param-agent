@@ -6,7 +6,7 @@
     "model": "deepseek-chat",
     "temperature": 0.0,
     "max_tokens": 1500,
-    "timeout_sec": 25
+    "timeout_sec": 60
   },
   "note": "复制到 scripts/config.json（或项目根目录 config.json）并填入 api_key。也支持环境变量 DEEPSEEK_API_KEY / OPENAI_API_KEY。兼容任意 OpenAI 兼容 API。"
 }

@@ -133,7 +133,7 @@ def parse_with_llm(text: str, available_files: List[str] = None) -> Optional[Lis
             },
         )
 
-        with urllib.request.urlopen(req, timeout=15) as resp:
+        with urllib.request.urlopen(req, timeout=60) as resp:
             result = json.loads(resp.read().decode("utf-8"))
 
         content = result["choices"][0]["message"]["content"].strip()
