@@ -518,6 +518,28 @@ def plot_s_db(
         hovermode="closest",
         template="plotly_white",
         legend=dict(orientation="h", yanchor="top", y=-0.15, xanchor="center", x=0.5),
+        xaxis=dict(
+            type="log",
+            tickformat=".4g",
+            showgrid=True,
+            gridcolor="#e0e0e0",
+            gridwidth=0.5,
+            minor=dict(
+                showgrid=True,
+                gridcolor="#f0f0f0",
+                gridwidth=0.3,
+                tickmode="auto",
+                tickcount=9,
+            ),
+        ),
+        yaxis=dict(
+            showgrid=True,
+            gridcolor="#e0e0e0",
+            gridwidth=0.5,
+            zeroline=True,
+            zerolinecolor="#999",
+            zerolinewidth=1,
+        ),
     )
 
     if save_to:
@@ -591,11 +613,13 @@ def plot_s_db_dual(
         template="plotly_white",
         legend=dict(orientation="h", yanchor="top", y=-0.15, xanchor="center", x=0.5),
     )
-    fig.update_xaxes(title_text="Frequency (GHz)")
+    fig.update_xaxes(title_text="Frequency (GHz)", type="log", tickformat=".4g",
+                     showgrid=True, gridcolor="#e0e0e0", gridwidth=0.5,
+                     minor=dict(showgrid=True, gridcolor="#f0f0f0", gridwidth=0.3))
     fig.update_yaxes(title_text="Magnitude (dB) — 左轴", secondary_y=False,
-                     gridcolor="#dde", zerolinecolor="#445")
+                     showgrid=True, gridcolor="#dde", zerolinecolor="#445")
     fig.update_yaxes(title_text="Magnitude (dB) — 右轴", secondary_y=True,
-                     gridcolor="#edd", zerolinecolor="#544")
+                     showgrid=True, gridcolor="#edd", zerolinecolor="#544")
 
     if save_to:
         fig.write_html(save_to, include_plotlyjs="cdn")
@@ -641,6 +665,9 @@ def plot_s_deg(
         hovermode="closest",
         template="plotly_white",
         legend=dict(orientation="h", yanchor="top", y=-0.15, xanchor="center", x=0.5),
+        xaxis=dict(type="log", tickformat=".4g", showgrid=True, gridcolor="#e0e0e0", gridwidth=0.5,
+                   minor=dict(showgrid=True, gridcolor="#f0f0f0", gridwidth=0.3)),
+        yaxis=dict(showgrid=True, gridcolor="#e0e0e0", gridwidth=0.5, zeroline=True, zerolinecolor="#999", zerolinewidth=1),
     )
 
     if save_to:
@@ -789,6 +816,9 @@ def plot_vswr(
         hovermode="closest",
         template="plotly_white",
         legend=dict(orientation="h", yanchor="top", y=-0.15, xanchor="center", x=0.5),
+        xaxis=dict(type="log", tickformat=".4g", showgrid=True, gridcolor="#e0e0e0", gridwidth=0.5,
+                   minor=dict(showgrid=True, gridcolor="#f0f0f0", gridwidth=0.3)),
+        yaxis=dict(showgrid=True, gridcolor="#e0e0e0", gridwidth=0.5),
     )
 
     if save_to:
@@ -835,6 +865,9 @@ def plot_group_delay(
         hovermode="closest",
         template="plotly_white",
         legend=dict(orientation="h", yanchor="top", y=-0.15, xanchor="center", x=0.5),
+        xaxis=dict(type="log", tickformat=".4g", showgrid=True, gridcolor="#e0e0e0", gridwidth=0.5,
+                   minor=dict(showgrid=True, gridcolor="#f0f0f0", gridwidth=0.3)),
+        yaxis=dict(showgrid=True, gridcolor="#e0e0e0", gridwidth=0.5, zeroline=True, zerolinecolor="#999", zerolinewidth=1),
     )
 
     if save_to:
@@ -949,6 +982,9 @@ def plot_multi_db(
         hovermode="closest",
         template="plotly_white",
         legend=dict(orientation="h", yanchor="top", y=-0.22, xanchor="center", x=0.5),
+        xaxis=dict(type="log", tickformat=".4g", showgrid=True, gridcolor="#e0e0e0", gridwidth=0.5,
+                   minor=dict(showgrid=True, gridcolor="#f0f0f0", gridwidth=0.3)),
+        yaxis=dict(showgrid=True, gridcolor="#e0e0e0", gridwidth=0.5, zeroline=True, zerolinecolor="#999", zerolinewidth=1),
     )
 
     if save_to:
@@ -1120,8 +1156,14 @@ def plot_compare(
                     showlegend=(pi == 0),
                 ), row=diff_row, col=col)
 
-    fig.update_xaxes(title_text="Frequency (GHz)", row=n_rows, col=1)
-    fig.update_yaxes(title_text="S-Parameter (dB)")
+    for row in range(1, n_rows + 1):
+        fig.update_xaxes(title_text="Frequency (GHz)", row=row, col=1,
+                         type="log", tickformat=".4g",
+                         showgrid=True, gridcolor="#e0e0e0", gridwidth=0.5,
+                         minor=dict(showgrid=True, gridcolor="#f0f0f0", gridwidth=0.3))
+    fig.update_yaxes(title_text="S-Parameter (dB)",
+                     showgrid=True, gridcolor="#e0e0e0", gridwidth=0.5,
+                     zeroline=True, zerolinecolor="#999", zerolinewidth=1)
     if show_diff:
         fig.update_yaxes(title_text="Δ (dB)", row=n_rows, col=1)
 
