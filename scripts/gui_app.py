@@ -40,9 +40,6 @@ class SParamGUI:
         # ── 构建 UI ──
         self._build_ui()
 
-        # 定期刷新加载状态
-        self._poll_loading()
-
     # ═══════════════════════════════════════
     #  UI 构建
     # ═══════════════════════════════════════
@@ -227,10 +224,13 @@ class SParamGUI:
 
     def _add_network(self, path):
         path = os.path.abspath(path)
-        # 快速读头
-        header = _read_header(path)
-        if header is None:
-            self.log(f"❌ 无法解析: {os.path.basename(path)}")
+        self.status(f"⏳ 正在解析 {os.path.basename(path)}...")
+        self.root.update()
+        try:
+            ntwk = rf.Network(path)
+        except Exception as e:
+            self.log(f"❌ 无法解析: {os.path.basename(path)} — {e}")
+            self.status("就绪")
             return
 
         name = os.path.splitext(os.path.basename(path))[0]
@@ -241,60 +241,29 @@ class SParamGUI:
                 idx += 1
             name = f"{base}_{idx}"
 
-        nports = header["nports"]
+        nports = ntwk.nports
         all_params = [f"S{m+1}{n+1}" for m in range(nports) for n in range(nports)]
 
         self.networks[name] = {
             "path": path,
-            "_ntwk": None,
-            "_loading": False,
+            "_ntwk": ntwk,
             "nports": nports,
-            "f_min": header["f_min"],
-            "f_max": header["f_max"],
-            "npoints": header["npoints"],
+            "f_min": float(ntwk.f[0]),
+            "f_max": float(ntwk.f[-1]),
+            "npoints": len(ntwk.f),
             "params": all_params,
         }
-        self.log(f"📂 {name}  {nports}端口  {header['npoints']}点  "
-                 f"{header['f_min']/1e9:.4f}–{header['f_max']/1e9:.4f} GHz")
+        self.log(f"📂 {name}  {nports}端口  {len(ntwk.f)}点  "
+                 f"{ntwk.f[0]/1e9:.4f}–{ntwk.f[-1]/1e9:.4f} GHz")
         self._refresh_net_list()
+        self.status("就绪")
 
     def _get_network(self, name):
-        """获取网络对象（延迟加载）。"""
+        """获取网络对象（直接返回已加载对象）。"""
         entry = self.networks.get(name)
         if not entry:
             return None
-        if entry["_ntwk"] is not None:
-            return entry["_ntwk"]
-        # 触发加载
-        if not entry["_loading"]:
-            entry["_loading"] = True
-            self.status(f"⏳ 正在加载 {name}...")
-            t = threading.Thread(target=self._load_worker, args=(name,), daemon=True)
-            t.start()
-        return None  # 还没加载完
-
-    def _load_worker(self, name):
-        entry = self.networks[name]
-        try:
-            ntwk = rf.Network(entry["path"])
-            entry["_ntwk"] = ntwk
-            self.log(f"✅ {name} 已载入内存 ({ntwk.nports}端口, {len(ntwk.f)}点)")
-        except Exception as e:
-            self.log(f"❌ {name} 加载失败: {e}")
-        finally:
-            entry["_loading"] = False
-
-    def _poll_loading(self):
-        """定期检查加载状态，刷新 UI。"""
-        updated = False
-        for name, entry in self.networks.items():
-            if entry["_loading"] and entry["_ntwk"] is not None:
-                entry["_loading"] = False
-                updated = True
-        if updated:
-            self._refresh_net_list()
-        self.root.after(2000, self._poll_loading)
-
+        return entry["_ntwk"]
     # ═══════════════════════════════════════
     #  网络列表
     # ═══════════════════════════════════════
@@ -302,9 +271,8 @@ class SParamGUI:
     def _refresh_net_list(self):
         self.net_list.delete(0, tk.END)
         for name, entry in self.networks.items():
-            loaded = "✓" if entry["_ntwk"] is not None else "⏳"
             self.net_list.insert(tk.END,
-                f"{loaded} {name}  [{entry['nports']}端口, {entry['npoints']}点]")
+                f"{name}  [{entry['nports']}端口, {entry['npoints']}点]")
         # 更新参考网络下拉
         names = list(self.networks.keys())
         self.ref_combo["values"] = names
@@ -592,79 +560,6 @@ class SParamGUI:
                 self.root.after(0, lambda: self.log(f"❌ Agent 异常: {e}"))
 
         threading.Thread(target=_run, daemon=True).start()
-
-
-# ═══════════════════════════════════════════
-#  文件头快速解析（同 app.py）
-# ═══════════════════════════════════════════
-
-def _read_header(path: str) -> dict:
-    import re as _re
-    data_re = _re.compile(r"^\s*-?\d")
-
-    freq_unit = "ghz"
-    nports = 0
-    first_data_line = None
-
-    with open(path, "r", encoding="utf-8", errors="ignore") as f:
-        for line in f:
-            stripped = line.strip()
-            if not stripped or stripped.startswith("!"):
-                continue
-            if stripped.startswith("#"):
-                parts = stripped.split()
-                freq_str = parts[1].lower() if len(parts) > 1 else "ghz"
-                if "ghz" in freq_str: freq_unit = "ghz"
-                elif "mhz" in freq_str: freq_unit = "mhz"
-                elif "khz" in freq_str: freq_unit = "khz"
-                elif "hz" in freq_str: freq_unit = "hz"
-                continue
-            if data_re.match(stripped):
-                first_data_line = stripped
-                break
-
-    if first_data_line is None:
-        return None
-
-    cols = first_data_line.split()
-    nvals = len(cols) - 1
-    if nvals > 0:
-        for cols_per_param in [2, 1]:
-            n2 = nvals // cols_per_param
-            n = int(n2 ** 0.5)
-            if n * n == n2 and n > 0:
-                nports = n
-                break
-
-    if nports == 0:
-        return None
-
-    freq_mul = {"ghz": 1e9, "mhz": 1e6, "khz": 1e3, "hz": 1.0}.get(freq_unit, 1e9)
-    try:
-        f_min = float(cols[0]) * freq_mul
-    except Exception:
-        f_min = 0.0
-
-    npoints = 0
-    last_freq = None
-    with open(path, "r", encoding="utf-8", errors="ignore") as f:
-        for line in f:
-            if data_re.match(line):
-                npoints += 1
-                try:
-                    last_freq = float(line.split()[0])
-                except Exception:
-                    pass
-
-    f_max = (last_freq * freq_mul) if last_freq is not None else f_min
-
-    return {
-        "nports": nports,
-        "f_min": float(f_min),
-        "f_max": float(f_max),
-        "npoints": npoints,
-        "freq_unit": freq_unit,
-    }
 
 
 # ═══════════════════════════════════════════
