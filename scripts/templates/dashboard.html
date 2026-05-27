@@ -388,10 +388,12 @@ function renderFileList() {
     const selClass = isSelected ? ' selected' : '';
     const chk = multiMode || state.selectedFiles.length >= 1 ?
       `<input type="checkbox" class="file-chk" ${isSelected ? 'checked' : ''} onclick="toggleMultiSelect('${name}', event)" title="多选对比">` : '';
+    const loaded = n.loaded !== false;
+    const loadBadge = loaded ? '' : ' <span style="font-size:0.7rem;color:#ffaa00;">⏳ 未载入</span>';
     return `<div class="file-card${selClass}" onclick="selectFile('${name}')">
       ${chk}
       <div class="info">
-        <div class="name">${isPrimary ? '★ ' : ''}${name}</div>
+        <div class="name">${isPrimary ? '★ ' : ''}${name}${loadBadge}</div>
         <div class="meta">${n.nports}端口 · ${n.f_min.toFixed(3)}–${n.f_max.toFixed(3)} GHz · ${n.npoints}点</div>
       </div>
       <button class="remove" onclick="event.stopPropagation();removeFile('${name}')">✕</button>
@@ -399,7 +401,7 @@ function renderFileList() {
   }).join('');
 }
 
-function selectFile(name) {
+async function selectFile(name) {
   // Toggle in multi-select list
   const idx = state.selectedFiles.indexOf(name);
   if (idx >= 0) {
@@ -413,6 +415,23 @@ function selectFile(name) {
   renderFileList();
   renderParamTags();
   updateCompareRef();
+
+  // 自动触发延迟加载
+  const net = state.networks[name];
+  if (net && !net.loaded && net.nports > 8) {
+    toast(`⏳ 正在加载 ${name} 的 S 矩阵 (${net.nports}端口, ${net.npoints}点)...`);
+    try {
+      const res = await fetch(`/api/networks/${encodeURIComponent(name)}/load?session=default`, { method: 'POST' });
+      const data = await res.json();
+      if (data.ok) {
+        net.loaded = true;
+        renderFileList();
+        toast(`✅ ${name} 已载入内存 (${data.nports}端口, ${data.npoints}点)`);
+      }
+    } catch (e) {
+      toast(`⚠️ ${name} 加载失败: ${e.message}`, 'error');
+    }
+  }
 }
 
 function toggleMultiSelect(name, ev) {
@@ -614,6 +633,27 @@ document.addEventListener('click', function(e) {
 async function generateChart() {
   if (!state.selectedFile) { toast('请先选择文件', 'error'); return; }
   if (!state.selectedParams.length) { toast('请选择至少一个 S 参数', 'error'); return; }
+
+  // 确保网络已加载
+  const net = state.networks[state.selectedFile];
+  if (net && !net.loaded) {
+    toast(`⏳ 正在加载 ${state.selectedFile} 的 S 矩阵...`);
+    try {
+      const res = await fetch(`/api/networks/${encodeURIComponent(state.selectedFile)}/load?session=default`, { method: 'POST' });
+      const data = await res.json();
+      if (data.ok) {
+        net.loaded = true;
+        renderFileList();
+        toast(`✅ 已载入，正在生成图表...`);
+      } else {
+        toast(`加载失败: ${data.error}`, 'error');
+        return;
+      }
+    } catch (e) {
+      toast(`加载失败: ${e.message}`, 'error');
+      return;
+    }
+  }
 
   const payload = {
     session: 'default',
@@ -888,6 +928,22 @@ function updateCompareUI() {
 async function doCompare() {
   const files = state.selectedFiles.length >= 2 ? state.selectedFiles : Object.keys(state.networks).slice(0, 10);
   if (files.length < 2) { toast('请至少选择 2 个网络进行对比', 'error'); return; }
+
+  // 预加载未载入的网络
+  const unloaded = files.filter(f => state.networks[f] && !state.networks[f].loaded);
+  if (unloaded.length > 0) {
+    toast(`⏳ 正在加载 ${unloaded.length} 个网络的 S 矩阵...`);
+    for (const name of unloaded) {
+      try {
+        const res = await fetch(`/api/networks/${encodeURIComponent(name)}/load?session=default`, { method: 'POST' });
+        const data = await res.json();
+        if (data.ok) state.networks[name].loaded = true;
+      } catch (e) { /* continue */ }
+    }
+    renderFileList();
+    toast(`✅ 已载入，正在生成对比图...`);
+  }
+
   const params = state.selectedParams.length > 0 ? state.selectedParams : ['S21'];
   const payload = {
     session: 'default', networks: files, params: params, chart_type: 'db',

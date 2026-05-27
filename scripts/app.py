@@ -834,12 +834,43 @@ def list_networks():
     nets = {}
     for name, info in sessions[session_id]["networks"].items():
         entry = dict(info)
+        # 移除 _ntwk 对象（不可序列化），替换为状态标志
+        entry["loaded"] = "_ntwk" in info and info["_ntwk"] is not None
+        entry.pop("_ntwk", None)
         if len(entry.get("params", [])) > 200:
             entry["params_truncated"] = True
             entry["total_params"] = len(entry["params"])
             entry["params"] = entry["params"][:200]
         nets[name] = entry
     return jsonify({"networks": nets})
+
+
+@app.route("/api/networks/<name>/load", methods=["POST"])
+def load_network(name):
+    """触发网络延迟加载，返回加载状态。"""
+    session_id = request.args.get("session", "default")
+    ntwk = _get_network(session_id, name)
+    if ntwk is None:
+        return jsonify({"ok": False, "error": f"找不到网络 '{name}'"}), 404
+    return jsonify({"ok": True, "name": name, "nports": ntwk.nports, "npoints": len(ntwk.f)})
+
+
+@app.route("/api/networks/<name>/status", methods=["GET"])
+def network_status(name):
+    """查询网络是否已加载到内存。"""
+    session_id = request.args.get("session", "default")
+    if session_id not in sessions:
+        return jsonify({"loaded": False, "error": "会话不存在"})
+    nets = sessions[session_id].get("networks", {})
+    if name not in nets:
+        return jsonify({"loaded": False, "error": "网络不存在"})
+    entry = nets[name]
+    return jsonify({
+        "loaded": "_ntwk" in entry and entry["_ntwk"] is not None,
+        "name": name,
+        "nports": entry.get("nports", 0),
+        "npoints": entry.get("npoints", 0),
+    })
 
 
 @app.route("/api/networks/<name>", methods=["DELETE"])
