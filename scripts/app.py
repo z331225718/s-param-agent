@@ -79,120 +79,132 @@ def agent():
     LLM → 生成受限 Python 代码 → AST 校验 → 沙箱执行 → 返回图表
     """
     data = request.get_json()
-    session_id = data.get("session", "default")
-    text = data.get("text", "").strip()
+    if data is None:
+        return jsonify({"reply": "请求体为空或非 JSON", "results": []})
 
-    if not text:
-        return jsonify({"reply": "请说点什么", "results": []})
+    try:
+        session_id = data.get("session", "default")
+        text = data.get("text", "").strip()
 
-    if not code_agent.is_available():
+        if not text:
+            return jsonify({"reply": "请说点什么", "results": []})
+
+        if not code_agent.is_available():
+            return jsonify({
+                "reply": "需要配置 LLM API Key。设置 DEEPSEEK_API_KEY 或 OPENAI_API_KEY 环境变量。",
+                "results": [],
+                "mode": "unavailable",
+            })
+
+        # 获取当前会话中的文件路径（用绝对路径）
+        ses = sessions.get(session_id, {}).get("networks", {})
+        file_path = None
+        if ses:
+            last = list(ses.values())[-1]
+            file_path = os.path.abspath(last.get("path", ""))
+
+        # 如果文本中包含文件路径，优先使用（提取 .sNp 路径）
+        import re as _re
+        snp_match = _re.search(r"([\w./\\-]+\.s\dp)", text, _re.IGNORECASE)
+        if snp_match:
+            file_path = os.path.abspath(snp_match.group(1))
+
+        # ── 构建网络字典（名称 → dict），供 Agent 执行时预加载 ──
+        nets_dict = {}
+        for net_name, net_info in ses.items():
+            nets_dict[net_name] = {
+                "path": net_info.get("path", ""),
+                "nports": net_info.get("nports", 0),
+            }
+
+        # ── 调用代码生成 Agent ──
+        result = code_agent.generate_code(text, file_path=file_path,
+                                           networks=nets_dict if nets_dict else None)
+
+        if "error" in result:
+            return jsonify({
+                "reply": f"❌ {result['error']}",
+                "results": [],
+                "mode": "agent",
+                "code": result.get("code", ""),
+                "llm_raw": result.get("llm_raw", ""),
+            })
+
+        code = result["code"]
+        validated = result["validated"]
+        validation_msg = result["validation_msg"]
+        exec_r = result["exec_result"]
+
+        results = []
+
+        # 校验失败 → 显示代码 + 错误
+        if not validated:
+            results.append({
+                "type": "error",
+                "message": f"代码校验未通过: {validation_msg}",
+            })
+            return jsonify({
+                "reply": f"❌ 生成的代码未通过安全检查: {validation_msg}",
+                "results": results,
+                "mode": "agent",
+                "code": code,
+                "validated": False,
+            })
+
+        # 执行失败
+        if not exec_r.get("ok"):
+            error_msg = exec_r.get("error", "未知错误")
+            stderr = exec_r.get("stderr", "")
+            results.append({
+                "type": "error",
+                "message": f"执行失败:\n{error_msg}",
+            })
+            if stderr:
+                results.append({"type": "text", "message": f"stderr:\n{stderr}"})
+            return jsonify({
+                "reply": f"❌ 代码执行出错: {error_msg[:200]}",
+                "results": results,
+                "mode": "agent",
+                "code": code,
+                "exec_stdout": exec_r.get("stdout", ""),
+                "exec_stderr": stderr,
+            })
+
+        # 执行成功
+        reply_parts = ["✅ 代码生成并执行成功"]
+
+        if exec_r.get("stdout"):
+            results.append({"type": "text", "message": f"输出:\n{exec_r['stdout']}"})
+
+        # 渲染图表
+        if exec_r.get("figure_json"):
+            fig_data = exec_r["figure_json"].get("data", [])
+            fig_layout = exec_r["figure_json"].get("layout", {})
+            results.append({
+                "type": "chart",
+                "chart": {"data": fig_data, "layout": fig_layout},
+                "title": text[:60],
+            })
+            reply_parts.append("📊 图表已生成")
+
         return jsonify({
-            "reply": "需要配置 LLM API Key。设置 DEEPSEEK_API_KEY 或 OPENAI_API_KEY 环境变量。",
-            "results": [],
-            "mode": "unavailable",
-        })
-
-    # 获取当前会话中的文件路径（用绝对路径）
-    ses = sessions.get(session_id, {}).get("networks", {})
-    file_path = None
-    if ses:
-        last = list(ses.values())[-1]
-        file_path = os.path.abspath(last.get("path", ""))
-
-    # 如果文本中包含文件路径，优先使用（提取 .sNp 路径）
-    import re as _re
-    snp_match = _re.search(r"([\w./\\-]+\.s\dp)", text, _re.IGNORECASE)
-    if snp_match:
-        file_path = os.path.abspath(snp_match.group(1))
-
-    # ── 构建网络字典（名称 → dict），供 Agent 执行时预加载 ──
-    nets_dict = {}
-    for net_name, net_info in ses.items():
-        nets_dict[net_name] = {
-            "path": net_info.get("path", ""),
-            "nports": net_info.get("nports", 0),
-        }
-
-    # ── 调用代码生成 Agent ──
-    result = code_agent.generate_code(text, file_path=file_path,
-                                       networks=nets_dict if nets_dict else None)
-
-    if "error" in result:
-        return jsonify({
-            "reply": f"❌ {result['error']}",
-            "results": [],
-            "mode": "agent",
-            "code": result.get("code", ""),
-            "llm_raw": result.get("llm_raw", ""),
-        })
-
-    code = result["code"]
-    validated = result["validated"]
-    validation_msg = result["validation_msg"]
-    exec_r = result["exec_result"]
-
-    results = []
-
-    # 校验失败 → 显示代码 + 错误
-    if not validated:
-        results.append({
-            "type": "error",
-            "message": f"代码校验未通过: {validation_msg}",
-        })
-        return jsonify({
-            "reply": f"❌ 生成的代码未通过安全检查: {validation_msg}",
+            "reply": "\n".join(reply_parts),
             "results": results,
             "mode": "agent",
             "code": code,
-            "validated": False,
-        })
-
-    # 执行失败
-    if not exec_r.get("ok"):
-        error_msg = exec_r.get("error", "未知错误")
-        stderr = exec_r.get("stderr", "")
-        results.append({
-            "type": "error",
-            "message": f"执行失败:\n{error_msg}",
-        })
-        if stderr:
-            results.append({"type": "text", "message": f"stderr:\n{stderr}"})
-        return jsonify({
-            "reply": f"❌ 代码执行出错: {error_msg[:200]}",
-            "results": results,
-            "mode": "agent",
-            "code": code,
+            "validated": True,
             "exec_stdout": exec_r.get("stdout", ""),
-            "exec_stderr": stderr,
+            "retries": result.get("retries", 0),
+            "history": result.get("history", []),
         })
 
-    # 执行成功
-    reply_parts = ["✅ 代码生成并执行成功"]
-
-    if exec_r.get("stdout"):
-        results.append({"type": "text", "message": f"输出:\n{exec_r['stdout']}"})
-
-    # 渲染图表
-    if exec_r.get("figure_json"):
-        fig_data = exec_r["figure_json"].get("data", [])
-        fig_layout = exec_r["figure_json"].get("layout", {})
-        results.append({
-            "type": "chart",
-            "chart": {"data": fig_data, "layout": fig_layout},
-            "title": text[:60],
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({
+            "reply": f"❌ 服务器内部错误: {str(e)[:300]}",
+            "results": [],
+            "mode": "agent",
         })
-        reply_parts.append("📊 图表已生成")
-
-    return jsonify({
-        "reply": "\n".join(reply_parts),
-        "results": results,
-        "mode": "agent",
-        "code": code,
-        "validated": True,
-        "exec_stdout": exec_r.get("stdout", ""),
-        "retries": result.get("retries", 0),
-        "history": result.get("history", []),
-    })
 
 
 # ──────────────────────────────────────────────────────────────

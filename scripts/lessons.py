@@ -24,8 +24,11 @@ if not os.path.exists(_PATH) and getattr(sys, 'frozen', False):
 
 def _load() -> List[Dict]:
     if os.path.exists(_PATH):
-        with open(_PATH, "r", encoding="utf-8") as f:
-            return json.load(f)
+        try:
+            with open(_PATH, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except json.JSONDecodeError:
+            return []
     return []
 
 
