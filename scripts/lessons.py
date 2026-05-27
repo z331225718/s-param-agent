@@ -9,11 +9,14 @@
 
 import json
 import os
+import sys
 import re
 import time
 from typing import List, Dict
 
 _PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "lessons.json")
+if not os.path.exists(_PATH) and getattr(sys, 'frozen', False):
+    _PATH = os.path.join(sys._MEIPASS, "lessons.json")
 
 # ═══════════════════════════════════════════════════════════════
 #  加载 / 保存

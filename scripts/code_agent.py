@@ -22,6 +22,14 @@ import contextlib
 import importlib
 from typing import Optional, Tuple
 
+# ── PyInstaller 兼容：定位资源目录 ──
+def _base_dir():
+    if getattr(sys, 'frozen', False):
+        return sys._MEIPASS
+    return os.path.dirname(os.path.abspath(__file__))
+
+_BASE = _base_dir()
+
 # ── 白名单 ─────────────────────────────────────────────────────
 
 ALLOWED_IMPORTS = {
@@ -399,10 +407,11 @@ def _get_llm_config():
     import sys as _sys
 
     # 候选路径：scripts/config.json → 项目根/config.json
-    _script_dir = os.path.dirname(os.path.abspath(__file__))
     _candidates = [
-        os.path.join(_script_dir, "config.json"),
-        os.path.join(_script_dir, "..", "config.json"),
+        os.path.join(_BASE, "config.json"),
+        os.path.join(_BASE, "..", "config.json"),
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json"),
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "config.json"),
     ]
 
     for config_path in _candidates:

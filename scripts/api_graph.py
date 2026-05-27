@@ -9,11 +9,14 @@ API 知识图谱 — NetworkX 有向图。
 
 import json
 import os
+import sys
 from typing import List, Dict, Tuple
 
 import networkx as nx
 
 _INDEX_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "api_index.json")
+if not os.path.exists(_INDEX_PATH) and getattr(sys, 'frozen', False):
+    _INDEX_PATH = os.path.join(sys._MEIPASS, "api_index.json")
 
 # ═══════════════════════════════════════════════════════════════
 #  图谱构建

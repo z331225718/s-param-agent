@@ -6,11 +6,14 @@ skrf + plotly API 参考查询模块。
 
 import json
 import os
+import sys
 from typing import List
 
 # ── 加载索引 ───────────────────────────────────────────────────
 
 _INDEX_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "api_index.json")
+if not os.path.exists(_INDEX_PATH) and getattr(sys, 'frozen', False):
+    _INDEX_PATH = os.path.join(sys._MEIPASS, "api_index.json")
 _ENTRIES: List[dict] = []
 
 def _load():
