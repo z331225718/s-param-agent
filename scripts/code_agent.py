@@ -494,11 +494,9 @@ def is_available() -> bool:
     return _get_llm_config() is not None
 
 
-MAX_RETRIES = 3
-
 def generate_code(user_text: str, file_path: str = None, networks: dict = None) -> dict:
     """
-    完整流程：LLM 生成代码 → 验证 → 执行 → 失败自动纠错（最多 3 次）。
+    单次对话：LLM 生成代码 → 验证 → 执行（不重试，无历史）。
 
     Args:
         user_text: 用户自然语言
@@ -506,7 +504,7 @@ def generate_code(user_text: str, file_path: str = None, networks: dict = None) 
         networks: {"name": {"path": "...", "nports": N}, ...} 预加载到 _nets 字典
 
     Returns:
-        { "code": "...", "validated": bool, "exec_result": {...}, "retries": int, "history": [...] }
+        { "code": "...", "validated": bool, "exec_result": {...}, "retries": 0 }
     """
     config = _get_llm_config()
     if not config:
@@ -523,110 +521,65 @@ def generate_code(user_text: str, file_path: str = None, networks: dict = None) 
 
     import urllib.request
 
-    messages = [
-        {"role": "system", "content": _build_full_system_prompt()},
-        {"role": "user", "content": f"{user_text}{context}"},
-    ]
-
-    history = []
-    last_code = ""
-
-    for attempt in range(1, MAX_RETRIES + 2):  # 1 初始 + 最多 3 次纠错 = 最多 4 次
-        payload = {
-            "model": config["model"],
-            "messages": messages,
-            "temperature": 0.0,
-            "max_tokens": 1500,
-        }
-
-        try:
-            req = urllib.request.Request(
-                f"{config['base_url'].rstrip('/')}/v1/chat/completions",
-                data=json.dumps(payload).encode("utf-8"),
-                headers={
-                    "Authorization": f"Bearer {config['api_key']}",
-                    "Content-Type": "application/json",
-                },
-            )
-            with urllib.request.urlopen(req, timeout=25) as resp:
-                result = json.loads(resp.read().decode("utf-8"))
-        except Exception as e:
-            return {"error": f"LLM 调用失败: {e}", "retries": attempt - 1, "history": history}
-
-        llm_response = result["choices"][0]["message"]["content"]
-        code = extract_code(llm_response)
-
-        if not code:
-            history.append({"attempt": attempt, "error": "LLM 未生成有效代码", "llm": llm_response[:300]})
-            continue
-
-        last_code = code
-
-        # 无条件删除危险调用（fig.show/write_html/write_image/plt.show）
-        for pattern, replacement in _DANGEROUS_PATTERNS:
-            code = _re.sub(pattern, replacement, code, flags=_re.MULTILINE)
-
-        # 用户指定 log scale → 强制注入规范对数轴
-        if _user_wants_log_scale(user_text):
-            code = _inject_log_scale(code)
-
-        last_code = code  # 同步清理后的代码
-
-        # 校验
-        valid, msg = validate_code(code)
-        if not valid:
-            history.append({"attempt": attempt, "code": code, "error": f"校验失败: {msg}"})
-            if attempt <= MAX_RETRIES:
-                messages.append({"role": "assistant", "content": f"```python\n{code}\n```"})
-                messages.append({"role": "user", "content": f"代码校验未通过: {msg}\n请修正后重新生成。"})
-            continue
-
-        # 执行
-        file_paths = {"file_path": file_path} if file_path else {}
-        exec_result = execute_code(code, file_paths, networks=networks)
-
-        if exec_result.get("ok") and exec_result.get("figure_json"):
-            # 成功！
-            history.append({"attempt": attempt, "code": code, "ok": True})
-
-            # 纠错成功后自动学习
-            if attempt > 1:
-                for h in reversed(history[:-1]):
-                    if "error" in h:
-                        _lessons.learn(h["error"],
-                                       wrong_code=h.get("code", ""),
-                                       correct_code=code)
-                        break
-
-            return {
-                "code": code,
-                "llm_raw": llm_response,
-                "validated": True,
-                "validation_msg": "OK",
-                "exec_result": exec_result,
-                "retries": attempt - 1,
-                "history": history,
-            }
-
-        # 执行失败，构建纠错提示
-        error_msg = exec_result.get("error", "未知错误")
-        history.append({"attempt": attempt, "code": code, "error": error_msg})
-
-        if attempt <= MAX_RETRIES:
-            fix_hint = api_refs.build_fix_prompt(error_msg)
-            messages.append({"role": "assistant", "content": f"```python\n{code}\n```"})
-            messages.append({"role": "user", "content": f"代码执行出错:\n{error_msg}\n\n{fix_hint}\n\n请修正代码后重新生成。只输出 ```python 代码块。"})
-
-    # 所有尝试都失败
-    return {
-        "code": last_code,
-        "validated": True,
-        "validation_msg": "多次尝试后仍失败",
-        "exec_result": {"ok": False, "error": f"经过 {MAX_RETRIES} 次纠错后仍执行失败", "figure_json": None, "stdout": "", "stderr": ""},
-        "retries": MAX_RETRIES,
-        "history": history,
+    payload = {
+        "model": config["model"],
+        "messages": [
+            {"role": "system", "content": _build_full_system_prompt()},
+            {"role": "user", "content": f"{user_text}{context}"},
+        ],
+        "temperature": 0.0,
+        "max_tokens": 1500,
     }
 
+    try:
+        req = urllib.request.Request(
+            f"{config['base_url'].rstrip('/')}/v1/chat/completions",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {config['api_key']}",
+                "Content-Type": "application/json",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=25) as resp:
+            result = json.loads(resp.read().decode("utf-8"))
+    except Exception as e:
+        return {"error": f"LLM 调用失败: {e}"}
+
+    llm_response = result["choices"][0]["message"]["content"]
+    code = extract_code(llm_response)
+
+    if not code:
+        return {"error": "LLM 未生成有效代码", "llm_raw": llm_response[:300]}
+
+    # 删除危险调用
+    for pattern, replacement in _DANGEROUS_PATTERNS:
+        code = _re.sub(pattern, replacement, code, flags=_re.MULTILINE)
+
+    # 用户指定 log scale → 强制注入规范对数轴
+    if _user_wants_log_scale(user_text):
+        code = _inject_log_scale(code)
+
+    # 校验
+    valid, msg = validate_code(code)
+    if not valid:
+        return {
+            "code": code,
+            "validated": False,
+            "validation_msg": msg,
+            "llm_raw": llm_response,
+        }
+
+    # 执行
+    file_paths = {"file_path": file_path} if file_path else {}
+    exec_result = execute_code(code, file_paths, networks=networks)
+
+    return {
+        "code": code,
+        "llm_raw": llm_response,
+        "validated": True,
+        "validation_msg": "OK",
+        "exec_result": exec_result,
+    }
 
 # ── 测试 ────────────────────────────────────────────────────────
 
