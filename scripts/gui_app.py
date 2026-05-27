@@ -27,14 +27,9 @@ import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 
-# matplotlib 配置（纯英文标签，避免字体问题）
-import matplotlib.font_manager as _fm
-try:
-    _fm._load_fontmanager(try_read_cache=False)
-except Exception:
-    pass
-plt.rcParams['font.family'] = 'sans-serif'
-plt.rcParams['font.sans-serif'] = ['DejaVu Sans', 'Arial', 'Helvetica', 'sans-serif']
+# matplotlib 全局字体（monospace 在所有平台可用，无方块问题）
+plt.rcParams['font.family'] = 'monospace'
+plt.rcParams['font.monospace'] = ['Consolas', 'Courier New', 'DejaVu Sans Mono', 'monospace']
 plt.rcParams['axes.unicode_minus'] = False
 
 # ═══════════════════════════════════════════
@@ -327,9 +322,9 @@ class SParamGUI:
         self.toolbar = NavigationToolbar2Tk(self.chart_canvas, self.chart_frame)
         self.toolbar.update()
 
-        self.ax.text(0.5, 0.5, "加载 .sNp 文件后选择参数\n点击「🔄 绘图」生成图表",
+        self.ax.text(0.5, 0.5, "Load .sNp file and select parameters\nClick [Plot] to generate chart",
                      transform=self.ax.transAxes, ha='center', va='center',
-                     fontsize=14, color='#aaa')
+                     fontsize=12, color='#aaa', family='monospace')
         self.ax.set_xticks([])
         self.ax.set_yticks([])
         self.chart_canvas.draw()
@@ -560,7 +555,7 @@ class SParamGUI:
 
     def _draw_chart(self, title=""):
         if title:
-            self.ax.set_title(title, fontsize=11, fontweight='bold')
+            self.ax.set_title(title, fontsize=11, fontweight='bold', family='monospace')
         self.fig.tight_layout()
         self.chart_canvas.draw()
 
