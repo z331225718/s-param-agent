@@ -94,11 +94,14 @@
   button.primary:hover { opacity: 0.9; }
 
   .param-tags { display: flex; flex-wrap: wrap; gap: 6px; }
-  .param-tag {
-    cursor: pointer; font-size: 0.78rem; padding: 4px 10px;
-    user-select: none;
+  .param-chip {
+    display: inline-block; cursor: pointer; font-size: 0.75rem;
+    padding: 3px 8px; border-radius: 4px;
+    background: #1a3a30; color: var(--accent);
+    border: 1px solid var(--accent); user-select: none;
+    white-space: nowrap;
   }
-  .param-tag.active { border-color: var(--accent); background: #1a3a30; color: var(--accent); }
+  .param-chip:hover { background: var(--danger); color: #fff; border-color: var(--danger); }
 
   /* 操作按钮行 */
   .action-row { display: flex; gap: 8px; flex-wrap: wrap; }
@@ -454,7 +457,30 @@ async function removeFile(name) {
   toast(`已移除: ${name}`);
 }
 
-// ── 参数标签 ──
+// ── 参数选择器（搜索式，适配大端口文件）──
+function getParamList(nports) {
+  const list = [];
+  for (let m = 1; m <= nports; m++) {
+    for (let n = 1; n <= nports; n++) {
+      list.push(`S${m}${n}`);
+    }
+  }
+  return list;
+}
+
+function getQuickParams(nports, kind) {
+  const list = [];
+  for (let m = 1; m <= nports; m++) {
+    for (let n = 1; n <= nports; n++) {
+      if (kind === 'all') list.push(`S${m}${n}`);
+      else if (kind === 'refl' && m === n) list.push(`S${m}${n}`);
+      else if (kind === 'trans' && m !== n) list.push(`S${m}${n}`);
+      else if (kind === `port${m}` && n === m) list.push(`S${m}${n}`);
+    }
+  }
+  return list;
+}
+
 function renderParamTags() {
   const el = document.getElementById('paramTags');
   if (!state.selectedFile || !state.networks[state.selectedFile]) {
@@ -462,36 +488,108 @@ function renderParamTags() {
     return;
   }
   const net = state.networks[state.selectedFile];
-  const params = net.params || [];
-  const maxShow = 100;
-  const display = params.slice(0, maxShow);
-  let html = display.map(p => {
-    const active = state.selectedParams.includes(p) ? ' active' : '';
-    return `<span class="param-tag${active}" onclick="toggleParam('${p}')">${p}</span>`;
-  }).join('');
-  if (params.length > maxShow || net.params_truncated) {
-    html += `<span style="font-size:0.72rem;color:#777;">… 仅显示前 ${maxShow}/${net.total_params || params.length} 个</span>`;
+  const nports = net.nports || 2;
+  const totalParams = nports * nports;
+
+  // 已选 chips
+  const chips = state.selectedParams.map(p =>
+    `<span class="param-chip" onclick="event.stopPropagation();toggleParam('${p}')">${p} ✕</span>`
+  ).join('');
+
+  // 快捷按钮
+  const quickBtns = [
+    ['all', '全部'],
+    ['refl', '反射'],
+    ['trans', '传输'],
+  ];
+  // 端口较多时只显示前几个端口快捷按钮
+  const maxPortBtns = Math.min(nports, 8);
+  for (let i = 1; i <= maxPortBtns; i++) {
+    quickBtns.push([`port${i}`, `端口${i}`]);
   }
-  el.innerHTML = html + `<div style="margin-top:8px;display:flex;gap:6px;">
-    <input type="text" id="paramManual" placeholder="手动输入 S43 或 S21" style="flex:1;background:#12122a;border:1px solid var(--border);color:var(--text);padding:5px 8px;border-radius:4px;font-size:0.78rem;"
-      onkeydown="if(event.key==='Enter')addManualParam()">
-    <button onclick="addManualParam()" style="padding:4px 10px;font-size:0.78rem;">+</button>
-  </div>`;
+
+  const quickHTML = quickBtns.map(([kind, label]) =>
+    `<button onclick="quickSelect('${kind}')" style="font-size:0.7rem;padding:3px 8px;border-radius:3px;">${label}</button>`
+  ).join('');
+
+  el.innerHTML = `
+    <div style="margin-bottom:4px;font-size:0.72rem;color:#666;">${nports}端口 · ${totalParams}个参数 · 已选 ${state.selectedParams.length} 个</div>
+    ${chips ? `<div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:6px;">${chips}</div>` : ''}
+    <div style="display:flex;gap:4px;margin-bottom:4px;flex-wrap:wrap;">${quickHTML}</div>
+    <div style="display:flex;gap:6px;position:relative;">
+      <input type="text" id="paramSearch" placeholder="搜索 S21 或 S42…" autocomplete="off"
+        style="flex:1;background:#12122a;border:1px solid var(--border);color:var(--text);padding:5px 8px;border-radius:4px;font-size:0.78rem;"
+        oninput="onParamSearch(this.value)" onfocus="onParamSearch(this.value)" onkeydown="onParamKey(event)">
+      <button onclick="addSearchedParam()" style="padding:4px 12px;font-size:0.78rem;">+</button>
+      <div id="paramDropdown" style="display:none;position:absolute;top:100%;left:0;right:0;max-height:200px;overflow-y:auto;background:#1a1a2e;border:1px solid var(--border);border-radius:4px;z-index:50;margin-top:2px;"></div>
+    </div>`;
 }
 
-function addManualParam() {
-  const inp = document.getElementById('paramManual');
+function onParamSearch(query) {
+  const dd = document.getElementById('paramDropdown');
+  if (!dd) return;
+  const net = state.networks[state.selectedFile];
+  if (!net) { dd.style.display = 'none'; return; }
+  const nports = net.nports || 2;
+  const q = query.trim().toUpperCase();
+  if (!q) { dd.style.display = 'none'; return; }
+
+  // 生成本地匹配
+  const matches = [];
+  for (let m = 1; m <= nports && matches.length < 50; m++) {
+    for (let n = 1; n <= nports && matches.length < 50; n++) {
+      const s = `S${m}${n}`;
+      if (s.includes(q)) matches.push(s);
+    }
+  }
+  if (matches.length === 0) { dd.style.display = 'none'; return; }
+  dd.innerHTML = matches.map(p =>
+    `<div onclick="addParamAndClose('${p}')" style="padding:4px 8px;cursor:pointer;font-size:0.78rem;border-bottom:1px solid var(--border);"
+       onmouseover="this.style.background='var(--hover)'" onmouseout="this.style.background=''">${p}</div>`
+  ).join('');
+  dd.style.display = 'block';
+}
+
+function onParamKey(ev) {
+  if (ev.key === 'Enter') {
+    ev.preventDefault();
+    addSearchedParam();
+  }
+  if (ev.key === 'Escape') {
+    document.getElementById('paramDropdown').style.display = 'none';
+  }
+}
+
+function addSearchedParam() {
+  const inp = document.getElementById('paramSearch');
   if (!inp) return;
   const val = inp.value.trim().toUpperCase();
   inp.value = '';
+  document.getElementById('paramDropdown').style.display = 'none';
   if (!val) return;
-  // 格式: S12 / VSWR1 / S12,S21
   const parts = val.split(/[,，\s]+/);
   for (let p of parts) {
     p = p.trim();
     if (!p) continue;
     if (!state.selectedParams.includes(p)) state.selectedParams.push(p);
-    else state.selectedParams = state.selectedParams.filter(x => x !== p);
+  }
+  renderParamTags();
+}
+
+function addParamAndClose(p) {
+  if (!state.selectedParams.includes(p)) state.selectedParams.push(p);
+  document.getElementById('paramDropdown').style.display = 'none';
+  document.getElementById('paramSearch').value = '';
+  renderParamTags();
+}
+
+function quickSelect(kind) {
+  const net = state.networks[state.selectedFile];
+  if (!net) return;
+  const nports = net.nports || 2;
+  const params = getQuickParams(nports, kind);
+  for (const p of params) {
+    if (!state.selectedParams.includes(p)) state.selectedParams.push(p);
   }
   renderParamTags();
 }
@@ -502,6 +600,15 @@ function toggleParam(p) {
   else state.selectedParams.push(p);
   renderParamTags();
 }
+
+// 点击外部关闭下拉
+document.addEventListener('click', function(e) {
+  const dd = document.getElementById('paramDropdown');
+  const srch = document.getElementById('paramSearch');
+  if (dd && srch && !srch.contains(e.target) && !dd.contains(e.target)) {
+    dd.style.display = 'none';
+  }
+});
 
 // ── 生成图表 ──
 async function generateChart() {
