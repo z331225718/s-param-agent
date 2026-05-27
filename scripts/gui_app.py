@@ -193,8 +193,12 @@ class SParamGUI:
         self.current_fig = None
         self.chart_canvas = None
         self.toolbar = None
+        self._loading_threads = []  # 追踪后台加载线程
+        self._cancel_event = threading.Event()
 
         self._build_ui()
+        # 窗口关闭时取消所有后台线程
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
     # ════════════════════════════
     #  UI 布局
@@ -330,6 +334,11 @@ class SParamGUI:
         self.ax.set_yticks([])
         self.chart_canvas.draw()
 
+    def _on_close(self):
+        """窗口关闭：取消后台线程并退出。"""
+        self._cancel_event.set()
+        self.root.destroy()
+
     # ════════════════════════════════════
     #  日志
     # ════════════════════════════════════
@@ -394,8 +403,12 @@ class SParamGUI:
         try:
             ntwk = rf.Network(path)
         except Exception as e:
-            self.root.after(0, lambda: self.log(f"❌ 无法解析: {os.path.basename(path)} — {e}"))
-            self.root.after(0, lambda: self.status("就绪"))
+            if not self._cancel_event.is_set():
+                self.root.after(0, lambda: self.log(f"❌ 无法解析: {os.path.basename(path)} — {e}"))
+                self.root.after(0, lambda: self.status("就绪"))
+            return
+
+        if self._cancel_event.is_set():
             return
 
         if name in self.networks:
@@ -415,6 +428,8 @@ class SParamGUI:
         }
         # 切回主线程更新 UI
         def _done():
+            if self._cancel_event.is_set():
+                return
             self.networks[name] = entry
             self.log(f"📂 {name}  {nports}端口  {len(ntwk.f)}点  "
                      f"{ntwk.f[0]/1e9:.4f}–{ntwk.f[-1]/1e9:.4f} GHz")
