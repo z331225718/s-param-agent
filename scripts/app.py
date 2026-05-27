@@ -94,8 +94,17 @@ def agent():
     if snp_match:
         file_path = os.path.abspath(snp_match.group(1))
 
+    # ── 构建网络字典（名称 → dict），供 Agent 执行时预加载 ──
+    nets_dict = {}
+    for net_name, net_info in ses.items():
+        nets_dict[net_name] = {
+            "path": net_info.get("path", ""),
+            "nports": net_info.get("nports", 0),
+        }
+
     # ── 调用代码生成 Agent ──
-    result = code_agent.generate_code(text, file_path=file_path)
+    result = code_agent.generate_code(text, file_path=file_path,
+                                       networks=nets_dict if nets_dict else None)
 
     if "error" in result:
         return jsonify({
@@ -646,6 +655,7 @@ def upload():
         all_params = sp.list_params(ntwk)
         sessions[session_id]["networks"][name] = {
             "path": tmp_path,
+            "_ntwk": ntwk,
             "nports": ntwk.nports,
             "f_min": float(ntwk.f[0]),
             "f_max": float(ntwk.f[-1]),
@@ -1232,21 +1242,40 @@ def deembed():
 # ──────────────────────────────────────────────────────────────
 
 def _get_network(session_id, name):
+    """从会话中获取网络对象（优先内存缓存，fallback 磁盘）。"""
     if session_id not in sessions:
         return None
     nets = sessions[session_id]["networks"]
+
+    def _resolve(key):
+        if key in nets:
+            entry = nets[key]
+            # 优先返回内存中的对象
+            if "_ntwk" in entry and entry["_ntwk"] is not None:
+                return entry["_ntwk"]
+            # fallback: 从磁盘加载并缓存
+            if "path" in entry and os.path.exists(entry["path"]):
+                ntwk = rf.Network(entry["path"])
+                entry["_ntwk"] = ntwk  # 缓存到内存
+                return ntwk
+        return None
+
     # 精确匹配
-    if name in nets:
-        return rf.Network(nets[name]["path"])
+    result = _resolve(name)
+    if result is not None:
+        return result
     # basename 匹配（去掉路径和扩展名）
     base = os.path.splitext(os.path.basename(name))[0] if name else ""
-    if base and base in nets:
-        return rf.Network(nets[base]["path"])
-    # 模糊匹配：任何键包含或等于 basename
     if base:
+        result = _resolve(base)
+        if result is not None:
+            return result
+        # 模糊匹配
         for k in nets:
             if k.lower() == base.lower() or base.lower() in k.lower() or k.lower() in base.lower():
-                return rf.Network(nets[k]["path"])
+                result = _resolve(k)
+                if result is not None:
+                    return result
     return None
 
 

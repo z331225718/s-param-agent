@@ -96,6 +96,16 @@ _SYSTEM_PROMPT_BASE = """你是 RF/微波工程的 Python 代码生成助手。�
 
 ## 严格规则
 
+### 网络对象获取
+**禁止使用 `rf.Network(path)` 读取文件！** 网络对象已预加载在 `_nets` 字典中。
+从 `_nets["名称"]` 直接获取，无需任何路径。
+```python
+# ✅ 正确
+ntwk = _nets["LNA"]
+# ❌ 错误
+ntwk = rf.Network("/path/to/LNA.s2p")
+```
+
 ### 允许的 import
 你 **只能** 使用以下库，任何其他 import 将被拒绝执行：
 ```python
@@ -123,6 +133,7 @@ from plotly.subplots import make_subplots
 - 不要写死绝对路径
 - 不要调用 fig.show() 或 fig.write_html()
 - **不要直接用 ntwk.f 作为 X 轴数据！必须先除以 1e9！**
+- **不要使用 rf.Network() 读取文件！用 _nets 字典！**
 
 ### 输出格式
 只输出代码，放在 ```python 代码块中。不要解释。
@@ -246,13 +257,14 @@ def extract_code(llm_response: str) -> Optional[str]:
 
 # ── 沙箱执行 ───────────────────────────────────────────────────
 
-def execute_code(code: str, file_paths: dict = None, timeout_sec: int = 15) -> dict:
+def execute_code(code: str, file_paths: dict = None, networks: dict = None, timeout_sec: int = 15) -> dict:
     """
     在子进程中执行代码（用 subprocess 隔离，跨平台安全）。
 
     Args:
         code: Python 代码字符串
-        file_paths: {"file_path": "/path/to/file.s2p"} 映射
+        file_paths: {"file_path": "/path/to/file.s2p"} 映射（向后兼容）
+        networks: {"name": {"path": "...", "nports": N}, ...} 预加载到 _nets
         timeout_sec: 超时秒数
 
     Returns:
@@ -267,11 +279,27 @@ def execute_code(code: str, file_paths: dict = None, timeout_sec: int = 15) -> d
     import subprocess
     import tempfile
 
+    # 构建网络预加载代码
+    nets_init = ""
+    if networks:
+        nets_init = f'''
+# ── 预加载网络对象到 _nets ──
+import skrf as rf
+_nets = {{}}
+_networks_config = {json.dumps(networks)}
+for _name, _info in _networks_config.items():
+    try:
+        _nets[_name] = rf.Network(_info["path"])
+    except Exception:
+        pass  # 跳过损坏的文件
+'''
+
     # 构建完整的可执行脚本
     wrapper = f'''
 import sys, io, json, traceback, os
+{nets_init}
 
-# 注入文件路径
+# 注入文件路径（兼容旧代码）
 file_path = {json.dumps(file_paths.get("file_path", "") if file_paths else "")}
 
 # 捕获输出
@@ -420,13 +448,14 @@ def is_available() -> bool:
 
 MAX_RETRIES = 3
 
-def generate_code(user_text: str, file_path: str = None) -> dict:
+def generate_code(user_text: str, file_path: str = None, networks: dict = None) -> dict:
     """
     完整流程：LLM 生成代码 → 验证 → 执行 → 失败自动纠错（最多 3 次）。
 
     Args:
         user_text: 用户自然语言
-        file_path: 当前会话中的 S 参数文件路径（可选）
+        file_path: 当前会话中的 S 参数文件路径（兼容旧代码）
+        networks: {"name": {"path": "...", "nports": N}, ...} 预加载到 _nets 字典
 
     Returns:
         { "code": "...", "validated": bool, "exec_result": {...}, "retries": int, "history": [...] }
@@ -436,7 +465,12 @@ def generate_code(user_text: str, file_path: str = None) -> dict:
         return {"error": "未配置 LLM API Key（DEEPSEEK_API_KEY 或 OPENAI_API_KEY）"}
 
     context = ""
-    if file_path:
+    if networks:
+        net_entries = []
+        for name, info in networks.items():
+            net_entries.append(f"  _nets[\"{name}\"] — {info.get('nports', '?')}端口")
+        context = "\n当前已加载的网络（通过 _nets 字典访问）：\n" + "\n".join(net_entries) + "\n**直接从 _nets 获取，不要用 rf.Network() 读文件！**"
+    elif file_path:
         context = f"\n当前已加载的文件路径: {file_path}\n请用这个路径读取文件。"
 
     import urllib.request
@@ -496,7 +530,7 @@ def generate_code(user_text: str, file_path: str = None) -> dict:
 
         # 执行
         file_paths = {"file_path": file_path} if file_path else {}
-        exec_result = execute_code(code, file_paths)
+        exec_result = execute_code(code, file_paths, networks=networks)
 
         if exec_result.get("ok") and exec_result.get("figure_json"):
             # 成功！
