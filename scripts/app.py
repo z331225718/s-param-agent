@@ -33,6 +33,7 @@ import s_params as sp
 import nl_parser
 import llm_chat
 import code_agent
+import network_inspector
 
 app = Flask(__name__, template_folder=os.path.join(_BASE, "templates"))
 app.config["MAX_CONTENT_LENGTH"] = 500 * 1024 * 1024  # 500 MB 上传上限（支持大端口文件如 .s64p）
@@ -323,6 +324,7 @@ def _execute_op(op, session_id: str, last_ntwk_name: str = None) -> dict:
             "f_max": float(ntwk.f[-1]),
             "npoints": len(ntwk.f),
             "params": sp.list_params(ntwk),
+            **_inspect_network(ntwk),
         }
         info_str = sp.info(ntwk)
         return {
@@ -366,6 +368,7 @@ def _execute_op(op, session_id: str, last_ntwk_name: str = None) -> dict:
             "f_max": float(ntwk_result.f[-1]),
             "npoints": len(ntwk_result.f),
             "params": sp.list_params(ntwk_result),
+            **_inspect_network(ntwk_result),
         }
         return {
             "type": "text",
@@ -394,6 +397,7 @@ def _execute_op(op, session_id: str, last_ntwk_name: str = None) -> dict:
             "f_max": float(sliced.f[-1]),
             "npoints": len(sliced.f),
             "params": sp.list_params(sliced),
+            **_inspect_network(sliced),
         }
         return {
             "type": "text",
@@ -524,6 +528,7 @@ def _execute_op(op, session_id: str, last_ntwk_name: str = None) -> dict:
             "f_max": float(result.f[-1]),
             "npoints": len(result.f),
             "params": sp.list_params(result),
+            **_inspect_network(result),
         }
         return {
             "type": "text",
@@ -554,6 +559,7 @@ def _execute_op(op, session_id: str, last_ntwk_name: str = None) -> dict:
                     "f_max": float(ntwk.f[-1]),
                     "npoints": len(ntwk.f),
                     "params": sp.list_params(ntwk),
+                    **_inspect_network(ntwk),
                 }
                 loaded.append(name)
             except Exception as e:
@@ -688,6 +694,7 @@ def upload():
             "f_max": float(ntwk.f[-1]),
             "npoints": len(ntwk.f),
             "params": all_params,
+            **_inspect_network(ntwk),
         }
 
         freq_unit = _guess_freq_unit(ntwk)
@@ -706,6 +713,7 @@ def upload():
             "params": display_params,
             "params_truncated": len(all_params) > 200,
             "total_params": len(all_params),
+            **_inspect_network(ntwk),
         })
     except Exception as e:
         os.unlink(tmp_path)
@@ -748,6 +756,7 @@ def upload_batch():
                 "f_max": float(ntwk.f[-1]),
                 "npoints": len(ntwk.f),
                 "params": all_params,
+                **_inspect_network(ntwk),
             }
             results.append({
                 "ok": True,
@@ -757,6 +766,7 @@ def upload_batch():
                 "f_max": float(ntwk.f[-1]),
                 "npoints": len(ntwk.f),
                 "params": all_params[:200],
+                **_inspect_network(ntwk),
             })
         except Exception as e:
             os.unlink(tmp_path)
@@ -802,6 +812,7 @@ def load_local():
             "f_max": float(ntwk.f[-1]),
             "npoints": len(ntwk.f),
             "params": all_params,
+            **_inspect_network(ntwk),
         }
 
         freq_unit = _guess_freq_unit(ntwk)
@@ -818,6 +829,7 @@ def load_local():
             "params": display_params,
             "params_truncated": len(all_params) > 200,
             "total_params": len(all_params),
+            **_inspect_network(ntwk),
         })
     except Exception as e:
         traceback.print_exc()
@@ -870,6 +882,7 @@ def upload_glob():
                 "f_max": float(ntwk.f[-1]),
                 "npoints": len(ntwk.f),
                 "params": all_params,
+                **_inspect_network(ntwk),
             }
             results.append({
                 "ok": True,
@@ -879,6 +892,7 @@ def upload_glob():
                 "f_max": float(ntwk.f[-1]),
                 "npoints": len(ntwk.f),
                 "params": all_params[:200],
+                **_inspect_network(ntwk),
             })
         except Exception as e:
             results.append({"ok": False, "name": os.path.basename(path), "error": str(e)})
@@ -900,6 +914,8 @@ def list_networks():
     nets = {}
     for name, info in sessions[session_id]["networks"].items():
         entry = dict(info)
+        if "network_kind" not in entry and entry.get("_ntwk") is not None:
+            entry.update(_inspect_network(entry["_ntwk"]))
         # 移除 _ntwk 对象（不可序列化），替换为状态标志
         entry["loaded"] = "_ntwk" in info and info["_ntwk"] is not None
         entry.pop("_ntwk", None)
@@ -1030,6 +1046,8 @@ def generate_chart():
                     trace = _make_groupdelay_trace(ntwk, m, n, label, p)
                 elif chart_type == "mag":
                     trace = _make_mag_trace(ntwk, m, n, label, p)
+                elif chart_type == "zmag":
+                    trace = _make_zmag_trace(ntwk, m, n, label, p)
                 else:
                     continue
                 fig_data.append(trace)
@@ -1173,6 +1191,7 @@ def cascade_chain_api():
         "f_max": float(result.f[-1]),
         "npoints": len(result.f),
         "params": sp.list_params(result),
+        **_inspect_network(result),
     }
     sessions[session_id]["networks"][result_name] = ses[result_name]
 
@@ -1185,6 +1204,7 @@ def cascade_chain_api():
         "f_max": float(result.f[-1]),
         "npoints": len(result.f),
         "params": sp.list_params(result),
+        **_inspect_network(result),
     })
 
 
@@ -1344,6 +1364,7 @@ def cascade():
         "f_max": float(ntwk_result.f[-1]),
         "npoints": len(ntwk_result.f),
         "params": sp.list_params(ntwk_result),
+        **_inspect_network(ntwk_result),
     }
 
     return jsonify({
@@ -1354,6 +1375,7 @@ def cascade():
         "f_max": float(ntwk_result.f[-1]),
         "npoints": len(ntwk_result.f),
         "params": sp.list_params(ntwk_result),
+        **_inspect_network(ntwk_result),
     })
 
 
@@ -1383,6 +1405,7 @@ def deembed():
         "f_max": float(ntwk_result.f[-1]),
         "npoints": len(ntwk_result.f),
         "params": sp.list_params(ntwk_result),
+        **_inspect_network(ntwk_result),
     }
 
     return jsonify({"ok": True, "name": result_name})
@@ -1437,6 +1460,18 @@ def _normalize_view_response(resp):
         status = resp[1] if len(resp) > 1 else response.status_code
         return response, status
     return resp, resp.status_code
+
+
+def _inspect_network(ntwk):
+    try:
+        return network_inspector.inspect_network(ntwk)
+    except Exception:
+        return {
+            "network_kind": "unknown",
+            "port_names": [],
+            "port_pairs": [],
+            "quick_actions": [],
+        }
 
 
 def _read_touchstone_header(path: str) -> dict:
@@ -1533,9 +1568,9 @@ def _guess_freq_unit(ntwk):
 
 
 def _parse_param(p: str):
-    """'S11' → (0, 0), 'S21' → (1, 0)"""
+    """'S11' → (0, 0), 'S21' → (1, 0), 'Z11' → (0, 0)."""
     p = p.strip().upper()
-    if p.startswith("S") and len(p) == 3:
+    if p.startswith(("S", "Z")) and len(p) == 3:
         m = int(p[1]) - 1
         n = int(p[2]) - 1
         return m, n
@@ -1585,6 +1620,19 @@ def _make_mag_trace(ntwk, m, n, label, p_name):
         "mode": "lines",
         "name": f"{label} {p_name}",
         "hovertemplate": f"<b>{label} {p_name}</b><br>%{{x:.4f}} GHz<br>Mag: %{{y:.4f}}<extra></extra>",
+    }
+
+
+def _make_zmag_trace(ntwk, m, n, label, p_name):
+    freq = ntwk.f / 1e9
+    zmag = np.abs(ntwk.z[:, m, n])
+    return {
+        "x": freq.tolist(),
+        "y": zmag.tolist(),
+        "type": "scatter",
+        "mode": "lines",
+        "name": f"{label} {p_name}",
+        "hovertemplate": f"<b>{label} {p_name}</b><br>%{{x:.4f}} GHz<br>|Z|: %{{y:.4f}} Ω<extra></extra>",
     }
 
 
@@ -1659,6 +1707,9 @@ def _make_layout(chart_type, title, options):
     elif chart_type == "groupdelay":
         base["xaxis"]["title"] = "Frequency (GHz)"
         base["yaxis"]["title"] = "Group Delay (ns)"
+    elif chart_type == "zmag":
+        base["xaxis"]["title"] = "Frequency (GHz)"
+        base["yaxis"]["title"] = "Magnitude |Z| (ohm)"
 
     # 覆盖用户选项
     if options.get("title"):

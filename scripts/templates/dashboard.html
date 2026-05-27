@@ -370,6 +370,7 @@ function renderFileList() {
 function selectFile(name) {
   state.selectedFile = name;
   state.selectedParams = [];
+  state.chartType = 'db';
   renderFileList();
   renderParamTags();
 }
@@ -423,24 +424,31 @@ function renderParamTags() {
     `<span class="param-chip" onclick="event.stopPropagation();toggleParam('${p}')">${p} ✕</span>`
   ).join('');
 
-  // 快捷按钮
-  const quickBtns = [
-    ['all', '全部'],
-    ['refl', '反射'],
-    ['trans', '传输'],
-  ];
-  // 端口较多时只显示前几个端口快捷按钮
-  const maxPortBtns = Math.min(nports, 8);
-  for (let i = 1; i <= maxPortBtns; i++) {
-    quickBtns.push([`port${i}`, `端口${i}`]);
+  const quickActions = Array.isArray(net.quick_actions) ? net.quick_actions : [];
+  let quickHTML = '';
+  if (quickActions.length) {
+    quickHTML = quickActions.map((action, idx) =>
+      `<button onclick="applyQuickAction(${idx})" title="${action.params.join(', ')}" style="font-size:0.7rem;padding:3px 8px;border-radius:3px;">${action.label}</button>`
+    ).join('');
+  } else {
+    const quickBtns = [
+      ['all', '全部'],
+      ['refl', '反射'],
+      ['trans', '传输'],
+    ];
+    const maxPortBtns = Math.min(nports, 8);
+    for (let i = 1; i <= maxPortBtns; i++) {
+      quickBtns.push([`port${i}`, `端口${i}`]);
+    }
+    quickHTML = quickBtns.map(([kind, label]) =>
+      `<button onclick="quickSelect('${kind}')" style="font-size:0.7rem;padding:3px 8px;border-radius:3px;">${label}</button>`
+    ).join('');
   }
 
-  const quickHTML = quickBtns.map(([kind, label]) =>
-    `<button onclick="quickSelect('${kind}')" style="font-size:0.7rem;padding:3px 8px;border-radius:3px;">${label}</button>`
-  ).join('');
+  const kindLabel = net.network_kind ? ` · ${net.network_kind}` : '';
 
   el.innerHTML = `
-    <div style="margin-bottom:4px;font-size:0.72rem;color:#666;">${nports}端口 · ${totalParams}个参数 · 已选 ${state.selectedParams.length} 个</div>
+    <div style="margin-bottom:4px;font-size:0.72rem;color:#666;">${nports}端口 · ${totalParams}个参数${kindLabel} · 已选 ${state.selectedParams.length} 个</div>
     ${chips ? `<div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:6px;">${chips}</div>` : ''}
     <div style="display:flex;gap:4px;margin-bottom:4px;flex-wrap:wrap;">${quickHTML}</div>
     <div style="display:flex;gap:6px;position:relative;">
@@ -515,9 +523,20 @@ function quickSelect(kind) {
   if (!net) return;
   const nports = net.nports || 2;
   const params = getQuickParams(nports, kind);
+  state.chartType = 'db';
   for (const p of params) {
     if (!state.selectedParams.includes(p)) state.selectedParams.push(p);
   }
+  renderParamTags();
+}
+
+function applyQuickAction(index) {
+  const net = state.networks[state.selectedFile];
+  if (!net || !Array.isArray(net.quick_actions)) return;
+  const action = net.quick_actions[index];
+  if (!action) return;
+  state.selectedParams = Array.isArray(action.params) ? [...action.params] : [];
+  state.chartType = action.chart_type || 'db';
   renderParamTags();
 }
 
@@ -586,7 +605,7 @@ async function generateChart() {
 
   const payload = {
     session: 'default',
-    type: 'db',
+    type: state.chartType || 'db',
     networks: [{ name: state.selectedFile, params: state.selectedParams, label: state.selectedFile }],
     title: `${state.selectedFile} - ${state.selectedParams.join(', ')}`,
   };
@@ -616,7 +635,7 @@ async function exportHTML() {
   }
   const payload = {
     session: 'default',
-    type: 'db',
+    type: state.chartType || 'db',
     networks: [{ name: state.selectedFile, params: state.selectedParams, label: state.selectedFile }],
     title: `${state.selectedFile} Report`,
   };
