@@ -613,9 +613,9 @@ def plot_s_db_dual(
         template="plotly_white",
         legend=dict(orientation="h", yanchor="top", y=-0.15, xanchor="center", x=0.5),
     )
-    fig.update_xaxes(title_text="Frequency (GHz)", type="log", tickformat=".4g",
-                     showgrid=True, gridcolor="#e0e0e0", gridwidth=0.5,
-                     minor=dict(showgrid=True, gridcolor="#f0f0f0", gridwidth=0.3))
+    fig.update_xaxes(title_text="Frequency (GHz)", type="log", tickformat=".0e", dtick=1,
+                     showgrid=True, gridcolor="#c0c0c0",
+                     minor=dict(showgrid=True, gridcolor="#e0e0e0", griddash="dash", showticklabels=False))
     fig.update_yaxes(title_text="Magnitude (dB) — 左轴", secondary_y=False,
                      showgrid=True, gridcolor="#dde", zerolinecolor="#445")
     fig.update_yaxes(title_text="Magnitude (dB) — 右轴", secondary_y=True,
@@ -665,8 +665,8 @@ def plot_s_deg(
         hovermode="closest",
         template="plotly_white",
         legend=dict(orientation="h", yanchor="top", y=-0.15, xanchor="center", x=0.5),
-        xaxis=dict(type="log", tickformat=".4g", showgrid=True, gridcolor="#e0e0e0", gridwidth=0.5,
-                   minor=dict(showgrid=True, gridcolor="#f0f0f0", gridwidth=0.3)),
+        xaxis=dict(type="log", tickformat=".0e", dtick=1, showgrid=True, gridcolor="#c0c0c0",
+                   minor=dict(showgrid=True, gridcolor="#e0e0e0", griddash="dash", showticklabels=False)),
         yaxis=dict(showgrid=True, gridcolor="#e0e0e0", gridwidth=0.5, zeroline=True, zerolinecolor="#999", zerolinewidth=1),
     )
 
@@ -816,8 +816,8 @@ def plot_vswr(
         hovermode="closest",
         template="plotly_white",
         legend=dict(orientation="h", yanchor="top", y=-0.15, xanchor="center", x=0.5),
-        xaxis=dict(type="log", tickformat=".4g", showgrid=True, gridcolor="#e0e0e0", gridwidth=0.5,
-                   minor=dict(showgrid=True, gridcolor="#f0f0f0", gridwidth=0.3)),
+        xaxis=dict(type="log", tickformat=".0e", dtick=1, showgrid=True, gridcolor="#c0c0c0",
+                   minor=dict(showgrid=True, gridcolor="#e0e0e0", griddash="dash", showticklabels=False)),
         yaxis=dict(showgrid=True, gridcolor="#e0e0e0", gridwidth=0.5),
     )
 
@@ -865,8 +865,8 @@ def plot_group_delay(
         hovermode="closest",
         template="plotly_white",
         legend=dict(orientation="h", yanchor="top", y=-0.15, xanchor="center", x=0.5),
-        xaxis=dict(type="log", tickformat=".4g", showgrid=True, gridcolor="#e0e0e0", gridwidth=0.5,
-                   minor=dict(showgrid=True, gridcolor="#f0f0f0", gridwidth=0.3)),
+        xaxis=dict(type="log", tickformat=".0e", dtick=1, showgrid=True, gridcolor="#c0c0c0",
+                   minor=dict(showgrid=True, gridcolor="#e0e0e0", griddash="dash", showticklabels=False)),
         yaxis=dict(showgrid=True, gridcolor="#e0e0e0", gridwidth=0.5, zeroline=True, zerolinecolor="#999", zerolinewidth=1),
     )
 
@@ -982,8 +982,8 @@ def plot_multi_db(
         hovermode="closest",
         template="plotly_white",
         legend=dict(orientation="h", yanchor="top", y=-0.22, xanchor="center", x=0.5),
-        xaxis=dict(type="log", tickformat=".4g", showgrid=True, gridcolor="#e0e0e0", gridwidth=0.5,
-                   minor=dict(showgrid=True, gridcolor="#f0f0f0", gridwidth=0.3)),
+        xaxis=dict(type="log", tickformat=".0e", dtick=1, showgrid=True, gridcolor="#c0c0c0",
+                   minor=dict(showgrid=True, gridcolor="#e0e0e0", griddash="dash", showticklabels=False)),
         yaxis=dict(showgrid=True, gridcolor="#e0e0e0", gridwidth=0.5, zeroline=True, zerolinecolor="#999", zerolinewidth=1),
     )
 
@@ -1158,9 +1158,9 @@ def plot_compare(
 
     for row in range(1, n_rows + 1):
         fig.update_xaxes(title_text="Frequency (GHz)", row=row, col=1,
-                         type="log", tickformat=".4g",
-                         showgrid=True, gridcolor="#e0e0e0", gridwidth=0.5,
-                         minor=dict(showgrid=True, gridcolor="#f0f0f0", gridwidth=0.3))
+                         type="log", tickformat=".0e", dtick=1,
+                         showgrid=True, gridcolor="#c0c0c0",
+                         minor=dict(showgrid=True, gridcolor="#e0e0e0", griddash="dash", showticklabels=False))
     fig.update_yaxes(title_text="S-Parameter (dB)",
                      showgrid=True, gridcolor="#e0e0e0", gridwidth=0.5,
                      zeroline=True, zerolinecolor="#999", zerolinewidth=1)
