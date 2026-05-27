@@ -556,7 +556,7 @@ class SParamGUI:
     def _draw_chart(self, title=""):
         if title:
             self.ax.set_title(title, fontsize=11, fontweight='bold', family='monospace')
-        self.fig.tight_layout()
+        self.fig.subplots_adjust(left=0.10, right=0.95, top=0.93, bottom=0.12)
         self.chart_canvas.draw()
 
     def _generate_chart(self):
@@ -569,6 +569,9 @@ class SParamGUI:
         if ntwk is None:
             self.log(f"⏳ {name} 未加载")
             return
+
+        self.status(f"⏳ 正在画 {name}...")
+        self.root.update_idletasks()
 
         params = self.selected_params if self.selected_params else None
         chart_type = self.chart_type.get()
@@ -603,6 +606,8 @@ class SParamGUI:
             self.log(f"📊 {name} 图表已生成")
         except Exception as e:
             self.log(f"❌ 生成失败: {e}")
+        finally:
+            self.status("就绪")
 
     # ════════════════════════════════════
     #  多文件对比
