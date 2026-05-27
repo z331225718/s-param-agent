@@ -270,13 +270,6 @@ def extract_code(llm_response: str) -> Optional[str]:
 
 # ── 对数轴关键词检测 ─────────────────────────────────────────────
 
-_LOG_KEYWORDS = [
-    "log scale", "log-scale", "logscale",
-    "log freq", "log frequency",
-    "对数", "对数轴", "对数坐标", "对数频率",
-    "set_xscale", "type='log'", 'type="log"',
-]
-
 _LOG_CONFIG = (
     "type='log', tickformat='.0e', dtick=1, "
     "showgrid=True, gridcolor='#c0c0c0', "
@@ -284,22 +277,45 @@ _LOG_CONFIG = (
     "exponentformat='power', showexponent='all'"
 )
 
-_LOG_INJECTION = f'''
-# [injected] log scale format (x + y)
-fig.update_xaxes({_LOG_CONFIG})
-fig.update_yaxes({_LOG_CONFIG})
-'''
+_LOG_INJECT_X = f"fig.update_xaxes({_LOG_CONFIG})"
+_LOG_INJECT_Y = f"fig.update_yaxes({_LOG_CONFIG})"
 
 
-def _user_wants_log_scale(text: str) -> bool:
-    """检测用户输入是否要求对数轴。"""
+def _user_wants_log_scale(text: str):
+    """检测用户输入要求对数轴的轴。返回 'x', 'y', 'both', 或 None。"""
     lower = text.lower()
-    return any(kw in lower for kw in _LOG_KEYWORDS)
+    x_hit = any(kw in lower for kw in [
+        "x log", "log x", "x轴", "x 轴", "频率对数", "对数频率",
+        "x scale", "log freq", "log x-axis",
+    ])
+    y_hit = any(kw in lower for kw in [
+        "y log", "log y", "y轴", "y 轴",
+        "y scale", "log y-axis", "db对数", "对数db",
+    ])
+    generic = any(kw in lower for kw in [
+        "log scale", "log-scale", "logscale",
+        "对数", "对数轴", "对数坐标",
+        "set_xscale", "type='log'", 'type="log"',
+    ])
+    if x_hit and y_hit:
+        return 'both'
+    if x_hit:
+        return 'x'
+    if y_hit:
+        return 'y'
+    if generic:
+        return 'both'  # 没指定轴默认两边都设
+    return None
 
 
-def _inject_log_scale(code: str) -> str:
-    """在代码末尾注入规范对数轴配置。"""
-    return code.rstrip() + '\n' + _LOG_INJECTION + '\n'
+def _inject_log_scale(code: str, axis: str) -> str:
+    """在代码末尾注入对数轴配置。axis = 'x' | 'y' | 'both'"""
+    parts = [code.rstrip()]
+    if axis in ('x', 'both'):
+        parts.append(_LOG_INJECT_X)
+    if axis in ('y', 'both'):
+        parts.append(_LOG_INJECT_Y)
+    return '\n'.join(parts) + '\n'
 
 
 # ── 沙箱执行 ───────────────────────────────────────────────────
@@ -566,9 +582,10 @@ def generate_code(user_text: str, file_path: str = None, networks: dict = None) 
         for pattern, replacement in _DANGEROUS_PATTERNS:
             code = _re.sub(pattern, replacement, code, flags=_re.MULTILINE)
 
-        # 用户指定 log scale → 强制注入规范对数轴
-        if _user_wants_log_scale(user_text):
-            code = _inject_log_scale(code)
+        # 用户指定 log scale → 根据指定轴强制注入
+        log_axis = _user_wants_log_scale(user_text)
+        if log_axis:
+            code = _inject_log_scale(code, log_axis)
 
         last_code = code  # 同步清理后的代码
 
