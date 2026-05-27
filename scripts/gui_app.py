@@ -195,7 +195,7 @@ class SParamGUI:
         self.selected_params = []
         self.show_diff = tk.BooleanVar(value=True)
         self.current_fig = None
-        self.canvas = None
+        self.chart_canvas = None
         self.toolbar = None
 
         self._build_ui()
@@ -315,16 +315,16 @@ class SParamGUI:
 
     def _build_right(self, parent):
         # 图表区域
-        chart_frame = ttk.Frame(parent)
-        chart_frame.pack(fill=tk.BOTH, expand=True)
+        self.chart_frame = ttk.Frame(parent)
+        self.chart_frame.pack(fill=tk.BOTH, expand=True)
 
         self.fig = Figure(figsize=(8, 5), dpi=100, facecolor='white')
         self.ax = self.fig.add_subplot(111)
 
-        self.canvas = FigureCanvasTkAgg(self.fig, master=chart_frame)
-        self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+        self.chart_canvas = FigureCanvasTkAgg(self.fig, master=self.chart_frame)
+        self.chart_canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
 
-        self.toolbar = NavigationToolbar2Tk(self.canvas, chart_frame)
+        self.toolbar = NavigationToolbar2Tk(self.chart_canvas, self.chart_frame)
         self.toolbar.update()
 
         self.ax.text(0.5, 0.5, "加载 .sNp 文件后选择参数\n点击「🔄 绘图」生成图表",
@@ -332,7 +332,7 @@ class SParamGUI:
                      fontsize=14, color='#aaa')
         self.ax.set_xticks([])
         self.ax.set_yticks([])
-        self.canvas.draw()
+        self.chart_canvas.draw()
 
     # ════════════════════════════════════
     #  日志
@@ -536,7 +536,7 @@ class SParamGUI:
         if title:
             self.ax.set_title(title, fontsize=11, fontweight='bold')
         self.fig.tight_layout()
-        self.canvas.draw()
+        self.chart_canvas.draw()
 
     def _generate_chart(self):
         if not self.selected:
