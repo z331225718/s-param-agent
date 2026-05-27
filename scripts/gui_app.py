@@ -27,9 +27,19 @@ import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 
-# matplotlib 全局字体（monospace 在所有平台可用，无方块问题）
-plt.rcParams['font.family'] = 'monospace'
-plt.rcParams['font.monospace'] = ['Consolas', 'Courier New', 'DejaVu Sans Mono', 'monospace']
+# matplotlib 全局配置
+import matplotlib.font_manager as _fm
+_CJK_CANDIDATES = ['Microsoft YaHei', 'SimHei', 'WenQuanYi Micro Hei',
+                   'Noto Sans CJK SC', 'Noto Sans SC', 'Source Han Sans SC',
+                   'PingFang SC', 'Heiti SC', 'STHeiti']
+_AVAIL = {f.name for f in _fm.fontManager.ttflist}
+_CJK_FONT = 'sans-serif'
+for _f in _CJK_CANDIDATES:
+    if _f in _AVAIL:
+        _CJK_FONT = _f
+        break
+plt.rcParams['font.family'] = 'sans-serif'
+plt.rcParams['font.sans-serif'] = [_CJK_FONT, 'DejaVu Sans', 'Arial', 'sans-serif']
 plt.rcParams['axes.unicode_minus'] = False
 
 # ═══════════════════════════════════════════
@@ -533,18 +543,6 @@ class SParamGUI:
     #  图表生成
     # ════════════════════════════════════
 
-    def _show_image(self, pil_image, title="Agent Chart"):
-        """在 matplotlib 图表区显示 Agent 生成的 PNG。"""
-        import numpy as np
-        self._clear_chart()
-        self.ax.imshow(np.array(pil_image))
-        self.ax.set_xticks([])
-        self.ax.set_yticks([])
-        self.ax.set_title(title, fontsize=11, family='monospace')
-        self.fig.subplots_adjust(left=0.02, right=0.98, top=0.95, bottom=0.02)
-        self.chart_canvas.draw()
-        self.status(title)
-
     def _clear_chart(self):
         # 清除数据但保留轴框架
         for artist in list(self.ax.lines) + list(self.ax.collections) + list(self.ax.texts):
@@ -556,7 +554,7 @@ class SParamGUI:
 
     def _draw_chart(self, title=""):
         if title:
-            self.ax.set_title(title, fontsize=11, fontweight='bold', family='monospace')
+            self.ax.set_title(title, fontsize=11, fontweight='bold')
         self.fig.subplots_adjust(left=0.10, right=0.95, top=0.93, bottom=0.12)
         self.chart_canvas.draw()
 
@@ -728,21 +726,52 @@ class SParamGUI:
                 if "error" in result:
                     self.root.after(0, lambda: self.log(f"❌ {result['error']}"))
                     return
-                exec_r = result.get("exec_result", {})
-                if exec_r.get("ok") and exec_r.get("figure_png_b64"):
-                    # Agent 返回 matplotlib PNG → 嵌入界面
-                    import base64, io as _io2
-                    from PIL import Image, ImageTk
-                    img_data = base64.b64decode(exec_r["figure_png_b64"])
-                    img = Image.open(_io2.BytesIO(img_data))
-                    self.root.after(0, lambda: self._show_image(img, text[:60]))
-                    self.root.after(0, lambda: self.log("✅ Agent 图表已生成"))
-                self.root.after(0, lambda: self.log(
-                    f"✅ {result.get('reply', '完成')}"))
+                code = result.get("code", "")
+                if not code:
+                    self.root.after(0, lambda: self.log(
+                        f"✅ {result.get('reply', '完成')}"))
+                    return
+
+                # 直接在主画布上执行代码
+                self.root.after(0, lambda: self._exec_agent_code(code, nets_dict, text))
             except Exception as e:
                 self.root.after(0, lambda: self.log(f"❌ Agent 异常: {e}"))
 
         threading.Thread(target=_run, daemon=True).start()
+
+    def _exec_agent_code(self, code, nets_dict, title):
+        """在 GUI 主线程执行 Agent 生成的 matplotlib 代码。"""
+        import re
+        # 替换 fig, ax = plt.subplots(...) → 使用 GUI 的 fig/ax
+        code = re.sub(r'fig,\s*ax\s*=\s*plt\.subplots\s*\([^)]*\)', '', code)
+        code = re.sub(r'import matplotlib\.pyplot as plt\n?', '', code)
+        # 移除 plt.show() / fig.savefig()
+        code = re.sub(r'plt\.show\s*\([^)]*\)', '', code)
+        code = re.sub(r'fig\.savefig\s*\([^)]*\)', '', code)
+
+        self._clear_chart()
+        self.status(f"⏳ Agent 画图中...")
+        self.root.update_idletasks()
+
+        # 构建执行环境
+        exec_globals = {
+            '__builtins__': __builtins__,
+            'np': np, 'rf': rf,
+            'plt': plt,
+            'fig': self.fig,
+            'ax': self.ax,
+            '_nets': {n: self.networks[n]['_ntwk']
+                       for n in self.networks if self.networks[n].get('_ntwk')},
+        }
+
+        try:
+            exec(code, exec_globals)
+            self._draw_chart(title[:60] if title else "Agent Chart")
+            self.log("✅ Agent 图表已生成")
+        except Exception as e:
+            self.log(f"❌ Agent 代码执行失败: {e}")
+        finally:
+            self.status("就绪")
 
 
 # ═══════════════════════════════════════════
