@@ -27,18 +27,14 @@ import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 
-# 中文字体（逐个尝试，找到第一个可用的）
-_AVAILABLE_FONTS = [f.name for f in matplotlib.font_manager.fontManager.ttflist]
-_FONT_CANDIDATES = ['Microsoft YaHei', 'SimHei', 'WenQuanYi Micro Hei',
-                    'Noto Sans CJK SC', 'Noto Sans SC', 'Source Han Sans SC',
-                    'Arial Unicode MS', 'DejaVu Sans', 'sans-serif']
-_FOUND_FONT = 'sans-serif'
-for _f in _FONT_CANDIDATES:
-    if _f in _AVAILABLE_FONTS:
-        _FOUND_FONT = _f
-        break
-plt.rcParams['font.sans-serif'] = [_FOUND_FONT, 'DejaVu Sans', 'sans-serif']
+# matplotlib 配置（纯英文标签，避免字体问题）
+import matplotlib.font_manager as _fm
+try:
+    _fm._load_fontmanager(try_read_cache=False)
+except Exception:
+    pass
 plt.rcParams['font.family'] = 'sans-serif'
+plt.rcParams['font.sans-serif'] = ['DejaVu Sans', 'Arial', 'Helvetica', 'sans-serif']
 plt.rcParams['axes.unicode_minus'] = False
 
 # ═══════════════════════════════════════════
