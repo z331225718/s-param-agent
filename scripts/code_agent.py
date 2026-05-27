@@ -268,23 +268,6 @@ def extract_code(llm_response: str) -> Optional[str]:
     return None
 
 
-_LOG_SCALE_XAXIS = '''fig.update_xaxes(
-    type='log',
-    tickformat='.0e',
-    dtick=1,
-    showgrid=True, gridcolor='#c0c0c0',
-    minor=dict(showgrid=True, gridcolor='#e0e0e0', griddash='dash', showticklabels=False),
-    exponentformat='power', showexponent='all',
-)'''
-
-_LOG_SCALE_YAXIS = "fig.update_yaxes(exponentformat='power', showexponent='all')"
-
-
-def _enforce_log_scale(code: str) -> str:
-    """强制注入对数频率轴配置（追加在末尾，最后调用覆盖前序设置）。"""
-    return code.rstrip() + '\n\n' + _LOG_SCALE_XAXIS + '\n' + _LOG_SCALE_YAXIS + '\n'
-
-
 # ── 沙箱执行 ───────────────────────────────────────────────────
 
 def execute_code(code: str, file_paths: dict = None, networks: dict = None, timeout_sec: int = 15) -> dict:
@@ -549,8 +532,6 @@ def generate_code(user_text: str, file_path: str = None, networks: dict = None) 
         for pattern, replacement in _DANGEROUS_PATTERNS:
             code = _re.sub(pattern, replacement, code, flags=_re.MULTILINE)
 
-        # 强制注入对数轴规范（硬约束，无论 LLM 是否听从 prompt）
-        code = _enforce_log_scale(code)
         last_code = code  # 同步清理后的代码
 
         # 校验
