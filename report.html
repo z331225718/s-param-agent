@@ -391,8 +391,8 @@ fig.update_yaxes(exponentformat=<span class="str">'power'</span>, showexponent=<
       <div class="stat"><div class="num">494</div><div class="label">类型化关系边</div></div>
       <div class="stat"><div class="num">7</div><div class="label">关系类型 (has_method / mistaken_for / ...)</div></div>
       <div class="stat"><div class="num">3</div><div class="label">最大纠错重试次数</div></div>
-      <div class="stat"><div class="num">~580</div><div class="label">System Prompt tokens（每次调用）</div></div>
-      <div class="stat"><div class="num">15s</div><div class="label">沙箱执行超时</div></div>
+      <div class="stat"><div class="num">~420</div><div class="label">System Prompt tokens（每次调用）</div></div>
+      <div class="stat"><div class="num">30s</div><div class="label">沙箱执行超时</div></div>
       <div class="stat"><div class="num">0</div><div class="label">危险调用放行 (eval/os/subprocess)</div></div>
     </div>
   </div>
@@ -419,31 +419,41 @@ fig.update_yaxes(exponentformat=<span class="str">'power'</span>, showexponent=<
   </div>
 </section>
 
-<!-- ═══════════════ 下一步 ═══════════════ -->
+<!-- ═══════════════ 已实现功能 ═══════════════ -->
 <section class="section">
   <div class="container">
-    <h2>下一步：多 S 参数输入</h2>
-    <p class="desc">当前支持单文件操作。下一步的核心升级方向：</p>
+    <h2>高级功能</h2>
+    <p class="desc">已实现的核心能力</p>
     <div class="card-grid">
       <div class="card">
         <div class="icon">📂</div>
         <h3>批量文件加载</h3>
-        <p>拖拽或通配符加载多个 .sNp 文件，自动识别端口数和频率范围，统一或独立坐标系展示。</p>
+        <p>拖拽多个 .sNp 文件或输入本地路径直读（绕过 IT 上传限制）。通配符匹配目录批量加载。</p>
       </div>
       <div class="card">
         <div class="icon">🔗</div>
-        <h3>智能级联与拓扑</h3>
-        <p>用户描述「LNA → BPF → Amplifier」链路，Agent 自动理解拓扑并计算级联 S 参数。</p>
+        <h3>链式级联拓扑</h3>
+        <p>支持「LNA → BPF → Amplifier」多网络链式级联，自动验证端口匹配，一次操作完成 N 网络串接。</p>
       </div>
       <div class="card">
         <div class="icon">📊</div>
         <h3>多文件对比视图</h3>
-        <p>同一参数（如 S21）的多次测量结果叠加对比，自动标注差异和统计信息。</p>
+        <p>同一参数多文件叠加对比，自动插值到共同频率网格，标注差异统计（mean/max/RMS Δ）。</p>
       </div>
       <div class="card">
-        <div class="icon">🧮</div>
-        <h3>去嵌与校准</h3>
-        <p>自动识别夹具文件，执行 SOLT/TRL 校准和去嵌操作，支持多端口误差模型。</p>
+        <div class="icon">📁</div>
+        <h3>本地路径直读</h3>
+        <p>输入服务器本地文件路径直接加载，无需浏览器上传。适合 IT 安全策略限制上传的场景。</p>
+      </div>
+      <div class="card">
+        <div class="icon">🪵</div>
+        <h3>对数频率轴规范</h3>
+        <p>RF 行业标准对数频率轴：dtick=1 每 10 倍频主网格，科学记数法标签，虚线次级网格。</p>
+      </div>
+      <div class="card">
+        <div class="icon">🎨</div>
+        <h3>统一画图风格</h3>
+        <p>Agent 生成图表与界面手动出图完全一致：plotly_dark 暗色主题、统一色板、水平图例。</p>
       </div>
     </div>
   </div>

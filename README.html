@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>S-Parameter Agent — 使用指南</title>
+<style>
+  :root {
+    --bg: #0f0f1a; --panel: #1a1a2e; --border: #2a2a4a;
+    --text: #c0c0c0; --accent: #00d4aa; --accent2: #4da6ff;
+    --code-bg: #0d1726;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family: -apple-system, 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); line-height: 1.8; }
+  .container { max-width: 900px; margin: 0 auto; padding: 40px 20px; }
+  h1 { font-size: 2rem; margin-bottom: 4px; background: linear-gradient(135deg, var(--accent), var(--accent2)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
+  h2 { font-size: 1.3rem; color: var(--accent); margin: 32px 0 12px; border-bottom: 1px solid var(--border); padding-bottom: 6px; }
+  h3 { font-size: 1rem; color: var(--accent2); margin: 16px 0 8px; }
+  p { margin-bottom: 10px; }
+  code { background: var(--code-bg); padding: 2px 6px; border-radius: 3px; font-family: 'Consolas', monospace; font-size: 0.85rem; color: #a5d6ff; }
+  pre { background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px; padding: 16px 20px; overflow-x: auto; font-family: 'Consolas', monospace; font-size: 0.82rem; line-height: 1.6; margin: 10px 0; }
+  .step { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 16px 20px; margin: 12px 0; }
+  .step-num { display: inline-block; background: var(--accent); color: #000; width: 24px; height: 24px; border-radius: 50%; text-align: center; line-height: 24px; font-weight: 700; font-size: 0.8rem; margin-right: 8px; }
+  .tip { background: #1a2a1a; border: 1px solid #2a4a2a; border-radius: 6px; padding: 12px 16px; margin: 12px 0; font-size: 0.9rem; }
+  .warn { background: #2a1a1a; border: 1px solid #4a2a2a; border-radius: 6px; padding: 12px 16px; margin: 12px 0; font-size: 0.9rem; }
+  a { color: var(--accent2); }
+  table { width: 100%; border-collapse: collapse; margin: 12px 0; }
+  th, td { padding: 8px 12px; border: 1px solid var(--border); text-align: left; font-size: 0.88rem; }
+  th { background: var(--panel); color: var(--accent); }
+</style>
+</head>
+<body>
+<div class="container">
+
+<h1>📡 S-Parameter Agent</h1>
+<p>对话式 RF 工程助手 — 用自然语言替代传统 S 参数处理软件</p>
+
+<h2>快速开始</h2>
+
+<div class="step">
+  <span class="step-num">1</span><strong>安装依赖</strong>
+  <pre>pip install flask scikit-rf plotly numpy</pre>
+</div>
+
+<div class="step">
+  <span class="step-num">2</span><strong>配置 LLM</strong>
+  <pre>cd scripts
+cp config.example.json config.json
+# 编辑 config.json，填入 api_key</pre>
+  <p>支持 DeepSeek / OpenAI / Ollama / vLLM 等任意 OpenAI 兼容 API。</p>
+</div>
+
+<div class="step">
+  <span class="step-num">3</span><strong>启动服务</strong>
+  <pre>cd scripts
+python app.py</pre>
+  <p>浏览器打开 <code>http://localhost:5050</code></p>
+</div>
+
+<div class="step">
+  <span class="step-num">4</span><strong>加载 S 参数文件</strong>
+  <p>两种方式：</p>
+  <ul>
+    <li><strong>上传</strong>：拖拽 .sNp 文件到虚线框</li>
+    <li><strong>本地路径</strong>：在输入框输入服务器本地路径，如 <code>/data/LNA.s2p</code>，回车加载（绕过 IT 上传限制）</li>
+  </ul>
+</div>
+
+<h2>手动绘图</h2>
+<p>加载文件后：</p>
+<ol>
+  <li>点击左侧文件列表中的网络</li>
+  <li>在参数区搜索或选择 S 参数（如 <code>S21</code>）</li>
+  <li>点击 <strong>🔄 生成图表</strong></li>
+</ol>
+<p>图表为交互式 Plotly：hover 看数值、滚轮缩放、拖拽平移、双击重置。</p>
+
+<h2>Agent 对话</h2>
+<p>在对话框输入自然语言指令，Agent 自动生成并执行代码：</p>
+
+<table>
+  <tr><th>输入</th><th>效果</th></tr>
+  <tr><td><code>画 S21 和 S11 的 dB 图</code></td><td>双曲线幅度图</td></tr>
+  <tr><td><code>画 S11 Smith 圆图，2-4GHz</code></td><td>Smith 图 + 频率截取</td></tr>
+  <tr><td><code>画 S21 相位，对数频率</code></td><td>相位图 + log 轴</td></tr>
+  <tr><td><code>级联 LNA.s2p 和 BPF.s2p，画 S21</code></td><td>级联后画图</td></tr>
+  <tr><td><code>只看 1-5GHz，导出 S21 为 CSV</code></td><td>频率截取 + 导出</td></tr>
+  <tr><td><code>把 LNA BPF AMP 级联，画对数 Smith 图</code></td><td>链式级联 + Smith 图</td></tr>
+</table>
+
+<h2>参数搜索</h2>
+<p>大端口文件（如 .s64p，4096 个 S 参数）：</p>
+<ul>
+  <li>在搜索框输入 <code>S42</code> 即时过滤匹配参数</li>
+  <li>快捷按钮：<strong>全部</strong> / <strong>反射</strong> / <strong>传输</strong> / <strong>端口1~8</strong></li>
+  <li>已选参数以芯片形式展示，点击删除</li>
+</ul>
+
+<h2>本地路径直读</h2>
+<div class="tip">💡 <strong>适用场景</strong>：IT 安全策略禁止浏览器上传文件、文件过大超时、已在服务器本地有文件。</div>
+<p>在仪表盘上传区域下的输入框填写本地路径，回车即可。服务端直接 <code>rf.Network(path)</code> 解析，不走 HTTP 传输。</p>
+
+<h2>配置文件</h2>
+<pre>{
+  "llm": {
+    "api_key": "sk-xxx",
+    "base_url": "https://api.deepseek.com",
+    "model": "deepseek-chat",
+    "temperature": 0.0,
+    "max_tokens": 1500,
+    "timeout_sec": 60
+  }
+}</pre>
+<p>也可设环境变量 <code>DEEPSEEK_API_KEY</code> 或 <code>OPENAI_API_KEY</code>。</p>
+
+<h2>安全机制</h2>
+<ul>
+  <li><strong>AST 白名单</strong>：只允许 skrf/plotly/numpy 的 import，拦截 eval/os/subprocess</li>
+  <li><strong>subprocess 沙箱</strong>：代码在独立进程中执行，30s 超时</li>
+  <li><strong>危险调用删除</strong>：<code>fig.show()</code> / <code>fig.write_html()</code> 在 AST 前正则移除</li>
+</ul>
+
+<h2>项目结构</h2>
+<pre>
+scripts/
+├── app.py              Flask Web 服务
+├── s_params.py         S 参数引擎（加载/画图/对比/级联/导出）
+├── code_agent.py       LLM 代码生成 + AST 沙箱
+├── nl_parser.py        自然语言解析器
+├── api_refs.py         API 速查生成
+├── api_graph.py        知识图谱（876 节点 / 494 边）
+├── lessons.py          自进化教训库
+├── config.example.json LLM 配置模板
+└── templates/
+    └── dashboard.html  Web 仪表盘
+</pre>
+
+<p style="margin-top:40px;text-align:center;color:#555;">
+  <a href="https://github.com/z331225718/s-param-agent">GitHub: z331225718/s-param-agent</a> · MIT License
+</p>
+
+</div>
+</body>
+</html>
