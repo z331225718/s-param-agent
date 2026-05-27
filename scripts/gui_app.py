@@ -385,16 +385,19 @@ class SParamGUI:
 
     def _add_network(self, path):
         path = os.path.abspath(path)
+        name = os.path.splitext(os.path.basename(path))[0]
         self.status(f"⏳ 正在解析 {os.path.basename(path)}...")
-        self.root.update()
+        # 后台线程加载，避免 UI 卡顿
+        threading.Thread(target=self._load_worker, args=(path, name), daemon=True).start()
+
+    def _load_worker(self, path, name):
         try:
             ntwk = rf.Network(path)
         except Exception as e:
-            self.log(f"❌ 无法解析: {os.path.basename(path)} — {e}")
-            self.status("就绪")
+            self.root.after(0, lambda: self.log(f"❌ 无法解析: {os.path.basename(path)} — {e}"))
+            self.root.after(0, lambda: self.status("就绪"))
             return
 
-        name = os.path.splitext(os.path.basename(path))[0]
         if name in self.networks:
             base, idx = name, 2
             while f"{base}_{idx}" in self.networks:
@@ -404,16 +407,20 @@ class SParamGUI:
         nports = ntwk.nports
         all_params = [f"S{m+1}{n+1}" for m in range(nports) for n in range(nports)]
 
-        self.networks[name] = {
+        entry = {
             "path": path, "_ntwk": ntwk,
             "nports": nports,
             "f_min": float(ntwk.f[0]), "f_max": float(ntwk.f[-1]),
             "npoints": len(ntwk.f), "params": all_params,
         }
-        self.log(f"📂 {name}  {nports}端口  {len(ntwk.f)}点  "
-                 f"{ntwk.f[0]/1e9:.4f}–{ntwk.f[-1]/1e9:.4f} GHz")
-        self._refresh_net_list()
-        self.status("就绪")
+        # 切回主线程更新 UI
+        def _done():
+            self.networks[name] = entry
+            self.log(f"📂 {name}  {nports}端口  {len(ntwk.f)}点  "
+                     f"{ntwk.f[0]/1e9:.4f}–{ntwk.f[-1]/1e9:.4f} GHz")
+            self._refresh_net_list()
+            self.status("就绪")
+        self.root.after(0, _done)
 
     def _get_network(self, name):
         entry = self.networks.get(name)
@@ -469,10 +476,17 @@ class SParamGUI:
         entry = self.networks.get(name)
         if not entry:
             return
-        self.param_label.config(text=f"{name}  {entry['nports']}端口 · {entry['nports']**2}参数")
-        for p in entry["params"]:
+        nports = entry['nports']
+        self.param_label.config(text=f"{name}  {nports}端口 · {nports**2}参数")
+        # 大端口截断显示，通过搜索定位
+        params = entry["params"]
+        max_show = 500
+        show_params = params if len(params) <= max_show else params[:max_show]
+        for p in show_params:
             self.param_list.insert(tk.END, p)
-        for i, p in enumerate(entry["params"]):
+        if len(params) > max_show:
+            self.param_list.insert(tk.END, f"... 还有 {len(params) - max_show} 个参数，用搜索框定位")
+        for i, p in enumerate(show_params):
             if p in self.selected_params:
                 self.param_list.selection_set(i)
 
@@ -484,13 +498,14 @@ class SParamGUI:
         if not entry:
             return
         nports = entry["nports"]
-        new_params = []
-        for m in range(1, nports + 1):
-            for n in range(1, nports + 1):
-                s = f"S{m}{n}"
-                if kind == "all" or (kind == "refl" and m == n) or (kind == "trans" and m != n):
-                    new_params.append(s)
-        self.selected_params = list(dict.fromkeys(self.selected_params + new_params))
+        existing = set(self.selected_params)
+        if kind == "all":
+            existing.update(f"S{m}{n}" for m in range(1, nports + 1) for n in range(1, nports + 1))
+        elif kind == "refl":
+            existing.update(f"S{m}{m}" for m in range(1, nports + 1))
+        elif kind == "trans":
+            existing.update(f"S{m}{n}" for m in range(1, nports + 1) for n in range(1, nports + 1) if m != n)
+        self.selected_params = list(existing)
         self._refresh_param_list()
 
     def _add_custom_param(self):
