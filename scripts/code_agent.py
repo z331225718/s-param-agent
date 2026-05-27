@@ -551,7 +551,9 @@ def generate_code(user_text: str, file_path: str = None, networks: dict = None) 
             with urllib.request.urlopen(req, timeout=60) as resp:
                 result = json.loads(resp.read().decode("utf-8"))
         except Exception as e:
-            return {"error": f"LLM 调用失败: {e}", "retries": attempt - 1, "history": history}
+            return {"error": f"LLM 调用失败: {e}", "code": "", "validated": False,
+                    "validation_msg": str(e), "retries": attempt - 1, "history": history,
+                    "exec_result": {"ok": False, "error": str(e)}}
 
         llm_response = result["choices"][0]["message"]["content"]
         code = extract_code(llm_response)
