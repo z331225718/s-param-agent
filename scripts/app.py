@@ -1422,67 +1422,62 @@ def _read_touchstone_header(path: str) -> dict:
     """
     快速读取 Touchstone 文件头，不解析完整 S 矩阵。
     适用于大端口文件（.s64p 等），毫秒级返回。
+    自动跳过任意长度的注释头（仿真软件可能导出上百行 ! 注释）。
     """
     import re as _re
-    with open(path, "r", encoding="utf-8", errors="ignore") as f:
-        lines = []
-        for _ in range(20):
-            line = f.readline()
-            if not line:
-                break
-            lines.append(line.strip())
-
-    # 解析 # 行: # GHz S RI R 50
-    nports = 0
-    freq_unit = "ghz"
-    for line in lines:
-        if line.startswith("#"):
-            parts = line.split()
-            freq_str = parts[1].lower() if len(parts) > 1 else "ghz"
-            if "ghz" in freq_str: freq_unit = "ghz"
-            elif "mhz" in freq_str: freq_unit = "mhz"
-            elif "khz" in freq_str: freq_unit = "khz"
-            elif "hz" in freq_str: freq_unit = "hz"
-            break
-
-    # 找第一个数据行确定端口数
     data_re = _re.compile(r"^\s*-?\d")
-    for line in lines:
-        if data_re.match(line):
-            cols = line.split()
-            # 第一个是频率，后面是 S 参数值
-            # RI 格式: N²×2 列 | DB/MA 格式: N² 列
-            nvals = len(cols) - 1
-            if nvals > 0:
-                # 尝试两种格式
-                # DB: columns per param = 1 (just dB)
-                # MA: columns per param = 2 (dB + deg)
-                # RI: columns per param = 2 (real + imag)
-                for cols_per_param in [2, 1]:
-                    n2 = nvals // cols_per_param
-                    n = int(n2 ** 0.5)
-                    if n * n == n2 and n > 0:
-                        nports = n
-                        break
-            break
+
+    # ── 第一遍：扫描找到 # 行和第一个数据行 ──
+    freq_unit = "ghz"
+    nports = 0
+    f_min = None
+    first_data_line = None
+
+    with open(path, "r", encoding="utf-8", errors="ignore") as f:
+        for line in f:
+            stripped = line.strip()
+            # 跳过空行和注释
+            if not stripped or stripped.startswith("!"):
+                continue
+            # # 行：频率单位等元数据
+            if stripped.startswith("#"):
+                parts = stripped.split()
+                freq_str = parts[1].lower() if len(parts) > 1 else "ghz"
+                if "ghz" in freq_str: freq_unit = "ghz"
+                elif "mhz" in freq_str: freq_unit = "mhz"
+                elif "khz" in freq_str: freq_unit = "khz"
+                elif "hz" in freq_str: freq_unit = "hz"
+                continue
+            # 数据行
+            if data_re.match(stripped):
+                first_data_line = stripped
+                break
+
+    if first_data_line is None:
+        return None
+
+    # ── 从第一个数据行推导端口数 ──
+    cols = first_data_line.split()
+    nvals = len(cols) - 1  # 减掉频率列
+    if nvals > 0:
+        for cols_per_param in [2, 1]:  # RI/MA(2列) 或 DB(1列)
+            n2 = nvals // cols_per_param
+            n = int(n2 ** 0.5)
+            if n * n == n2 and n > 0:
+                nports = n
+                break
 
     if nports == 0:
         return None
 
-    # 估算频率范围：读第一行和最后一行数据
-    f_min = None
-    f_max = None
+    # ── 频率范围 ──
     freq_mul = {"ghz": 1e9, "mhz": 1e6, "khz": 1e3, "hz": 1.0}.get(freq_unit, 1e9)
+    try:
+        f_min = float(cols[0]) * freq_mul
+    except Exception:
+        f_min = 0.0
 
-    for line in lines:
-        if data_re.match(line):
-            try:
-                f_min = float(line.split()[0]) * freq_mul
-            except Exception:
-                pass
-            break
-
-    # 统计总行数（快速扫描，大文件跳过行内容）
+    # ── 第二遍：统计总数据行数，取最后一行频率 ──
     npoints = 0
     last_freq = None
     with open(path, "r", encoding="utf-8", errors="ignore") as f:
@@ -1494,15 +1489,12 @@ def _read_touchstone_header(path: str) -> dict:
                 except Exception:
                     pass
 
-    if last_freq is not None:
-        f_max = last_freq * freq_mul
-    else:
-        f_max = f_min  # fallback
+    f_max = (last_freq * freq_mul) if last_freq is not None else f_min
 
     return {
         "nports": nports,
-        "f_min": float(f_min) if f_min else 0.0,
-        "f_max": float(f_max) if f_max else 0.0,
+        "f_min": float(f_min),
+        "f_max": float(f_max),
         "npoints": npoints,
         "freq_unit": freq_unit,
     }
