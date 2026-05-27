@@ -154,7 +154,7 @@ from plotly.subplots import make_subplots
 
 def _build_full_system_prompt() -> str:
     prompt = _SYSTEM_PROMPT_BASE + "\n" + api_refs.build_api_prompt()
-    lessons_prompt = _lessons.build_lessons_prompt(max_items=10)
+    lessons_prompt = _lessons.build_lessons_prompt(max_items=3)
     if lessons_prompt:
         prompt += "\n\n" + lessons_prompt
     return prompt
