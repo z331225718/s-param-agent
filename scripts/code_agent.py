@@ -158,8 +158,8 @@ fig = go.Figure()
 fig.add_trace(go.Scatter(
     x=freq_ghz, y=db, mode='lines', name='S11 (filter)',
     line=dict(color=COLORS[0], width=1.8),
-    hovertemplate='%{{customdata}}',
-    customdata=[f'Freq: {{f:.4f}} GHz<br>dB: {{v:.3f}}' for f, v in zip(freq_ghz, db)],
+    hovertemplate='%{customdata}',
+    customdata=[f'Freq: {f:.4f} GHz<br>dB: {v:.3f}' for f, v in zip(freq_ghz, db)],
 ))
 
 fig.update_layout(
