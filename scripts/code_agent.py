@@ -123,7 +123,7 @@ import matplotlib.pyplot as plt
 **必须用 matplotlib 画图，不要用 plotly！** 标准模板：
 ```python
 import matplotlib.pyplot as plt
-fig, ax = plt.subplots(figsize=(10, 5))
+fig, ax = plt.subplots(figsize=(12, 6))
 freq_ghz = ntwk.f / 1e9
 ax.plot(freq_ghz, ntwk.s_db[:, 0, 0], label='S11')
 ax.set_xscale('log')  # RF 行业标准：对数频率轴
@@ -138,7 +138,8 @@ ax.legend()
 - **频率必须转 GHz**：`ntwk.f` 是 Hz，必须 `freq_ghz = ntwk.f / 1e9`
 - **S 参数是 3D 数组**：`ntwk.s_db[:, m, n]`，不是 `[m, n]`
 - **画多条曲线**用多个 `ax.plot()` 调用，不同颜色自动分配
-- **标题用英文**，避免中文字体问题
+- **所有标签/标题/图例必须用英文**，禁止中文！用 'Frequency (GHz)', 'Magnitude (dB)', 'S11', 'Phase (deg)' 等
+- **图要大**：`fig, ax = plt.subplots(figsize=(12, 6))`
 
 ### 禁止
 - 不要 import os, sys, subprocess, requests, urllib, shutil
@@ -333,7 +334,7 @@ try:
     if fig is not None and hasattr(fig, "savefig"):
         import base64 as _b64, io as _io
         buf = _io.BytesIO()
-        fig.savefig(buf, format="png", dpi=100, bbox_inches="tight")
+        fig.savefig(buf, format="png", dpi=150, bbox_inches="tight")
         buf.seek(0)
         result["figure_png_b64"] = _b64.b64encode(buf.read()).decode("ascii")
         import matplotlib.pyplot as _plt
