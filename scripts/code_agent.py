@@ -367,17 +367,25 @@ def _indent(code: str, prefix: str) -> str:
 # ── LLM 调用 ───────────────────────────────────────────────────
 
 def _get_llm_config():
-    """读取 LLM 配置：config.json 优先，其次环境变量。"""
-    config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
+    """读取 LLM 配置：config.json 优先（先 scripts/ 再项目根），其次环境变量。"""
+    import sys as _sys
 
-    # 1. 尝试 config.json
-    if os.path.exists(config_path):
+    # 候选路径：scripts/config.json → 项目根/config.json
+    _script_dir = os.path.dirname(os.path.abspath(__file__))
+    _candidates = [
+        os.path.join(_script_dir, "config.json"),
+        os.path.join(_script_dir, "..", "config.json"),
+    ]
+
+    for config_path in _candidates:
+        config_path = os.path.normpath(config_path)
+        if not os.path.exists(config_path):
+            continue
         try:
             with open(config_path, "r") as f:
                 cfg = json.load(f).get("llm", {})
             api_key = cfg.get("api_key", "")
             if not api_key:
-                # 从环境变量取 key
                 api_key = os.environ.get("DEEPSEEK_API_KEY") or os.environ.get("OPENAI_API_KEY") or ""
             if api_key:
                 return {
@@ -385,8 +393,10 @@ def _get_llm_config():
                     "base_url": cfg.get("base_url", "https://api.deepseek.com"),
                     "model": cfg.get("model", "deepseek-chat"),
                 }
-        except Exception:
-            pass
+        except json.JSONDecodeError as e:
+            _sys.stderr.write(f"[WARN] config.json 解析失败 ({config_path}): {e}\n")
+        except Exception as e:
+            _sys.stderr.write(f"[WARN] 读取 config.json 出错 ({config_path}): {e}\n")
 
     # 2. fallback: 环境变量
     if os.environ.get("DEEPSEEK_API_KEY"):
