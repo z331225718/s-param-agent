@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-S-Parameter Agent — 原生 GUI 版本
-基于 tkinter，本地直接读取 .sNp 文件，绕过 HTTP 上传限制。
-支持：批量加载 / 链式级联 / 多文件对比 / LLM Agent
+S-Parameter Agent — 原生 GUI 版本 (matplotlib 引擎)
+基于 tkinter + matplotlib，图表直接嵌入界面。
+本地直接读取 .sNp 文件，绕过 HTTP 上传限制。
 """
 
 import os
@@ -10,10 +10,8 @@ import sys
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import threading
-import webbrowser
 import tempfile
 
-# 确保能找到同目录模块
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import numpy as np
@@ -22,98 +20,271 @@ import s_params as sp
 import nl_parser
 import code_agent
 
+# ── matplotlib ──
+import matplotlib
+matplotlib.use("TkAgg")
+import matplotlib.pyplot as plt
+from matplotlib.figure import Figure
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
+
+# 中文字体
+plt.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei', 'DejaVu Sans']
+plt.rcParams['axes.unicode_minus'] = False
+
+# ═══════════════════════════════════════════
+#  matplotlib 画图函数
+# ═══════════════════════════════════════════
+
+_COLORS = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728',
+           '#9467bd', '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
+
+
+def _mpl_plot_db(ax, ntwk, params=None):
+    """matplotlib: dB 幅度 vs 频率"""
+    if params is None:
+        params = [(m, n) for m in range(ntwk.nports) for n in range(ntwk.nports)]
+    freq_ghz = ntwk.f / 1e9
+    for i, (m, n) in enumerate(params):
+        ax.plot(freq_ghz, ntwk.s_db[:, m, n],
+                color=_COLORS[i % len(_COLORS)], linewidth=1.2,
+                label=f"S{m+1}{n+1} ({ntwk.name})")
+    ax.set_xscale("log")
+    ax.set_xlabel("Frequency (GHz)")
+    ax.set_ylabel("Magnitude (dB)")
+    ax.grid(True, which='major', color='#ccc', linewidth=0.5)
+    ax.grid(True, which='minor', color='#eee', linewidth=0.3)
+    ax.legend(loc='upper right', fontsize=7, ncol=2)
+
+
+def _mpl_plot_deg(ax, ntwk, params=None):
+    """matplotlib: 相位 vs 频率"""
+    if params is None:
+        params = [(m, n) for m in range(ntwk.nports) for n in range(ntwk.nports)]
+    freq_ghz = ntwk.f / 1e9
+    for i, (m, n) in enumerate(params):
+        ax.plot(freq_ghz, ntwk.s_deg[:, m, n],
+                color=_COLORS[i % len(_COLORS)], linewidth=1.2,
+                label=f"S{m+1}{n+1} ({ntwk.name})")
+    ax.set_xscale("log")
+    ax.set_xlabel("Frequency (GHz)")
+    ax.set_ylabel("Phase (deg)")
+    ax.grid(True, which='major', color='#ccc', linewidth=0.5)
+    ax.grid(True, which='minor', color='#eee', linewidth=0.3)
+    ax.legend(loc='upper right', fontsize=7, ncol=2)
+
+
+def _mpl_plot_smith(ax, ntwk, params=None):
+    """matplotlib: Smith 圆图"""
+    # 画 Smith 参考圆
+    theta = np.linspace(0, 2 * np.pi, 360)
+    for r in np.linspace(0.2, 1.0, 5):
+        ax.plot(r * np.cos(theta), r * np.sin(theta),
+                color='lightgray', linewidth=0.5)
+    ax.plot(np.cos(theta), np.sin(theta), color='gray', linewidth=0.8)
+    ax.axhline(0, color='gray', linewidth=0.5)
+    ax.axvline(0, color='gray', linewidth=0.5)
+
+    if params is None:
+        params = [(m, n) for m in range(ntwk.nports) for n in range(ntwk.nports)]
+    for i, (m, n) in enumerate(params):
+        gamma = ntwk.s[:, m, n]
+        ax.plot(np.real(gamma), np.imag(gamma),
+                color=_COLORS[i % len(_COLORS)], linewidth=1.2,
+                label=f"S{m+1}{n+1} ({ntwk.name})")
+
+    ax.set_xlim(-1.1, 1.1)
+    ax.set_ylim(-1.1, 1.1)
+    ax.set_aspect('equal')
+    ax.set_xlabel("Real (Γ)")
+    ax.set_ylabel("Imag (Γ)")
+    ax.grid(False)
+    ax.legend(loc='upper right', fontsize=7, ncol=2)
+
+
+def _mpl_plot_vswr(ax, ntwk, ports=None):
+    """matplotlib: VSWR vs 频率"""
+    if ports is None:
+        ports = list(range(ntwk.nports))
+    freq_ghz = ntwk.f / 1e9
+    for i, p in enumerate(ports):
+        ax.plot(freq_ghz, ntwk.s_vswr[:, p, p],
+                color=_COLORS[i % len(_COLORS)], linewidth=1.2,
+                label=f"VSWR{p+1} ({ntwk.name})")
+    ax.set_xscale("log")
+    ax.set_xlabel("Frequency (GHz)")
+    ax.set_ylabel("VSWR")
+    ax.grid(True, which='major', color='#ccc', linewidth=0.5)
+    ax.grid(True, which='minor', color='#eee', linewidth=0.3)
+    ax.legend(loc='upper right', fontsize=7, ncol=2)
+
+
+def _mpl_plot_groupdelay(ax, ntwk, params=None):
+    """matplotlib: 群时延 vs 频率"""
+    if params is None:
+        params = [(m, n) for m in range(ntwk.nports) for n in range(ntwk.nports)]
+    freq_ghz = ntwk.f / 1e9
+    for i, (m, n) in enumerate(params):
+        phase_rad = np.unwrap(np.angle(ntwk.s[:, m, n]))
+        dphi_df = np.gradient(phase_rad, ntwk.f)
+        gd_ns = -dphi_df / (2 * np.pi) * 1e9
+        ax.plot(freq_ghz, gd_ns,
+                color=_COLORS[i % len(_COLORS)], linewidth=1.2,
+                label=f"GD S{m+1}{n+1} ({ntwk.name})")
+    ax.set_xscale("log")
+    ax.set_xlabel("Frequency (GHz)")
+    ax.set_ylabel("Group Delay (ns)")
+    ax.grid(True, which='major', color='#ccc', linewidth=0.5)
+    ax.grid(True, which='minor', color='#eee', linewidth=0.3)
+    ax.legend(loc='upper right', fontsize=7, ncol=2)
+
+
+def _mpl_compare(ax, networks, names, param=(1, 0), show_diff=True, ref_idx=0):
+    """matplotlib: 多文件 dB 对比 + 差异曲线"""
+    freq_ghz = networks[0].f / 1e9
+    for i, ntwk in enumerate(networks):
+        ax.plot(freq_ghz, ntwk.s_db[:, param[0], param[1]],
+                color=_COLORS[i % len(_COLORS)], linewidth=1.2, label=names[i])
+
+    if show_diff and len(networks) >= 2:
+        ax2 = ax.twinx()
+        ref = networks[ref_idx]
+        ref_db = ref.s_db[:, param[0], param[1]]
+        for i, ntwk in enumerate(networks):
+            if i == ref_idx:
+                continue
+            diff = ntwk.s_db[:, param[0], param[1]] - ref_db
+            ax2.plot(freq_ghz, diff, color=_COLORS[i % len(_COLORS)],
+                     linewidth=0.8, linestyle='--', alpha=0.7,
+                     label=f"Δ ({names[i]}−{names[ref_idx]})")
+        ax2.set_ylabel("Δ (dB)", fontsize=8)
+        ax2.legend(loc='lower right', fontsize=6)
+
+    ax.set_xscale("log")
+    ax.set_xlabel("Frequency (GHz)")
+    pstr = f"S{param[0]+1}{param[1]+1}"
+    ax.set_ylabel(f"{pstr} (dB)")
+    ax.grid(True, which='major', color='#ccc', linewidth=0.5)
+    ax.grid(True, which='minor', color='#eee', linewidth=0.3)
+    ax.legend(loc='upper right', fontsize=7, ncol=2)
+
+
+# ═══════════════════════════════════════════
+#  GUI App
+# ═══════════════════════════════════════════
 
 class SParamGUI:
     def __init__(self, root):
         self.root = root
         self.root.title("S-Parameter Agent")
-        self.root.geometry("1100x750")
-        self.root.minsize(900, 600)
+        self.root.geometry("1200x800")
+        self.root.minsize(1000, 650)
+        self.root.configure(bg='#f0f0f0')
 
-        # ── 状态 ──
-        self.networks = {}   # name → {"path", "_ntwk", "nports", ...}
-        self.selected = []   # 当前选中的网络名列表
+        self.networks = {}
+        self.selected = []
         self.selected_params = []
-        self.chain = []
         self.show_diff = tk.BooleanVar(value=True)
+        self.current_fig = None
+        self.canvas = None
+        self.toolbar = None
 
-        # ── 构建 UI ──
         self._build_ui()
 
-    # ═══════════════════════════════════════
-    #  UI 构建
-    # ═══════════════════════════════════════
+    # ════════════════════════════
+    #  UI 布局
+    # ════════════════════════════
 
     def _build_ui(self):
-        # 主面板：左侧控制 / 右侧日志
-        paned = ttk.PanedWindow(self.root, orient=tk.HORIZONTAL)
-        paned.pack(fill=tk.BOTH, expand=True)
+        # ── 顶部工具栏 ──
+        toolbar_frame = ttk.Frame(self.root)
+        toolbar_frame.pack(fill=tk.X, padx=4, pady=(4, 0))
 
-        left = ttk.Frame(paned, width=420)
-        right = ttk.Frame(paned)
-        paned.add(left, weight=0)
-        paned.add(right, weight=1)
+        ttk.Button(toolbar_frame, text="📂 加载文件", command=self._load_files).pack(side=tk.LEFT, padx=2)
+        ttk.Button(toolbar_frame, text="📁 加载目录", command=self._load_directory).pack(side=tk.LEFT, padx=2)
+        self.path_entry = ttk.Entry(toolbar_frame, width=30)
+        self.path_entry.pack(side=tk.LEFT, padx=4)
+        self.path_entry.bind("<Return>", lambda e: self._load_by_path())
+        ttk.Button(toolbar_frame, text="路径加载", command=self._load_by_path).pack(side=tk.LEFT, padx=2)
 
-        # ── 左侧控制面板 ──
-        self._build_left_panel(left)
-        # ── 右侧日志 ──
-        self._build_right_panel(right)
+        ttk.Separator(toolbar_frame, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=8)
 
-    def _build_left_panel(self, parent):
-        # 滚动容器
-        canvas = tk.Canvas(parent, highlightthickness=0)
-        scrollbar = ttk.Scrollbar(parent, orient=tk.VERTICAL, command=canvas.yview)
-        scroll_frame = ttk.Frame(canvas)
-        scroll_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.create_window((0, 0), window=scroll_frame, anchor="nw")
-        canvas.configure(yscrollcommand=scrollbar.set)
+        ttk.Label(toolbar_frame, text="图表:").pack(side=tk.LEFT, padx=2)
+        self.chart_type = tk.StringVar(value="db")
+        for text, val in [("dB", "db"), ("相位", "deg"), ("Smith", "smith"),
+                          ("VSWR", "vswr"), ("群时延", "gd")]:
+            ttk.Radiobutton(toolbar_frame, text=text, variable=self.chart_type,
+                            value=val).pack(side=tk.LEFT, padx=1)
 
-        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        ttk.Separator(toolbar_frame, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=8)
 
-        # 绑定鼠标滚轮
-        def _on_mousewheel(event):
-            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
-        canvas.bind_all("<MouseWheel>", _on_mousewheel)
+        ttk.Button(toolbar_frame, text="🔄 绘图", command=self._generate_chart).pack(side=tk.LEFT, padx=2)
+        ttk.Button(toolbar_frame, text="📊 对比", command=self._compare).pack(side=tk.LEFT, padx=2)
+        ttk.Button(toolbar_frame, text="🔗 级联", command=self._cascade_chain).pack(side=tk.LEFT, padx=2)
+        ttk.Button(toolbar_frame, text="💾 CSV", command=self._export_csv).pack(side=tk.LEFT, padx=2)
 
-        f = scroll_frame
+        ttk.Separator(toolbar_frame, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=8)
 
-        # ── 文件加载 ──
-        grp = ttk.LabelFrame(f, text="📂 文件加载", padding=8)
-        grp.pack(fill=tk.X, padx=6, pady=4)
-        ttk.Button(grp, text="选择 .sNp 文件", command=self._load_files).pack(fill=tk.X, pady=2)
-        ttk.Button(grp, text="加载整个目录", command=self._load_directory).pack(fill=tk.X, pady=2)
-        row = ttk.Frame(grp)
-        row.pack(fill=tk.X, pady=2)
-        self.path_entry = ttk.Entry(row)
-        self.path_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        ttk.Button(row, text="路径加载", command=self._load_by_path).pack(side=tk.RIGHT, padx=(4, 0))
+        ttk.Label(toolbar_frame, text="Agent:").pack(side=tk.LEFT, padx=2)
+        self.agent_entry = ttk.Entry(toolbar_frame, width=25)
+        self.agent_entry.pack(side=tk.LEFT, padx=2)
+        self.agent_entry.bind("<Return>", lambda e: self._agent_chat())
+        ttk.Button(toolbar_frame, text="发送", command=self._agent_chat).pack(side=tk.LEFT, padx=2)
 
-        # ── 已加载网络列表 ──
-        grp = ttk.LabelFrame(f, text="📋 已加载网络", padding=8)
-        grp.pack(fill=tk.BOTH, expand=True, padx=6, pady=4)
-        self.net_list = tk.Listbox(grp, selectmode=tk.EXTENDED, height=8,
+        # ── 主区域：左侧网络列表 + 右侧图表 ──
+        main_pw = ttk.PanedWindow(self.root, orient=tk.HORIZONTAL)
+        main_pw.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
+
+        # 左侧面板
+        left = ttk.Frame(main_pw, width=320)
+        right = ttk.Frame(main_pw)
+        main_pw.add(left, weight=0)
+        main_pw.add(right, weight=1)
+
+        self._build_left(left)
+        self._build_right(right)
+
+        # ── 底部状态栏 ──
+        status_frame = ttk.Frame(self.root)
+        status_frame.pack(fill=tk.X, padx=4, pady=(0, 2))
+
+        self.status_var = tk.StringVar(value="就绪 — 点击「加载文件」选择 .sNp 文件")
+        ttk.Label(status_frame, textvariable=self.status_var,
+                  relief=tk.SUNKEN, anchor=tk.W, padding=2).pack(fill=tk.X, side=tk.LEFT)
+
+        self.log_text = tk.Text(status_frame, height=3, wrap=tk.WORD,
+                                font=("Consolas", 9), bg='#1e1e1e', fg='#c0c0c0',
+                                state=tk.DISABLED)
+        self.log_text.pack(fill=tk.X, side=tk.LEFT, expand=True)
+
+    def _build_left(self, parent):
+        f = ttk.Frame(parent)
+        f.pack(fill=tk.BOTH, expand=True)
+
+        # 网络列表
+        grp = ttk.LabelFrame(f, text="📋 已加载网络", padding=4)
+        grp.pack(fill=tk.BOTH, expand=True, padx=2, pady=2)
+        self.net_list = tk.Listbox(grp, selectmode=tk.EXTENDED, height=10,
                                    exportselection=False)
         self.net_list.pack(fill=tk.BOTH, expand=True)
         self.net_list.bind("<<ListboxSelect>>", self._on_net_select)
         row = ttk.Frame(grp)
-        row.pack(fill=tk.X, pady=2)
-        ttk.Button(row, text="移除选中", command=self._remove_selected).pack(side=tk.LEFT, padx=2)
-        ttk.Button(row, text="清空全部", command=self._clear_all).pack(side=tk.LEFT, padx=2)
+        row.pack(fill=tk.X, pady=1)
+        ttk.Button(row, text="移除", command=self._remove_selected, width=6).pack(side=tk.LEFT, padx=1)
+        ttk.Button(row, text="清空", command=self._clear_all, width=6).pack(side=tk.LEFT, padx=1)
 
-        # ── 参数选择 ──
-        grp = ttk.LabelFrame(f, text="🎯 S 参数", padding=8)
-        grp.pack(fill=tk.X, padx=6, pady=4)
+        # 参数选择
+        grp = ttk.LabelFrame(f, text="🎯 S 参数", padding=4)
+        grp.pack(fill=tk.BOTH, expand=True, padx=2, pady=2)
         self.param_label = ttk.Label(grp, text="请先选择网络")
         self.param_label.pack(anchor=tk.W)
-        self.param_list = tk.Listbox(grp, selectmode=tk.EXTENDED, height=4,
+        self.param_list = tk.Listbox(grp, selectmode=tk.EXTENDED, height=5,
                                      exportselection=False)
-        self.param_list.pack(fill=tk.X)
+        self.param_list.pack(fill=tk.BOTH, expand=True)
         row = ttk.Frame(grp)
-        row.pack(fill=tk.X, pady=2)
-        ttk.Button(row, text="全选", command=lambda: self._param_quick("all")).pack(side=tk.LEFT, padx=2)
-        ttk.Button(row, text="反射", command=lambda: self._param_quick("refl")).pack(side=tk.LEFT, padx=2)
-        ttk.Button(row, text="传输", command=lambda: self._param_quick("trans")).pack(side=tk.LEFT, padx=2)
+        row.pack(fill=tk.X, pady=1)
+        for txt, kind in [("全选", "all"), ("反射", "refl"), ("传输", "trans")]:
+            ttk.Button(row, text=txt, width=5,
+                       command=lambda k=kind: self._param_quick(k)).pack(side=tk.LEFT, padx=1)
         row2 = ttk.Frame(grp)
         row2.pack(fill=tk.X)
         self.param_entry = ttk.Entry(row2)
@@ -121,75 +292,59 @@ class SParamGUI:
         self.param_entry.bind("<Return>", lambda e: self._add_custom_param())
         ttk.Button(row2, text="+", width=3, command=self._add_custom_param).pack(side=tk.RIGHT)
 
-        # ── 图表类型 ──
-        grp = ttk.LabelFrame(f, text="📊 图表类型", padding=8)
-        grp.pack(fill=tk.X, padx=6, pady=4)
-        self.chart_type = tk.StringVar(value="db")
-        types = [("dB 幅度", "db"), ("相位", "deg"), ("Smith 圆图", "smith"),
-                 ("VSWR", "vswr"), ("群时延", "groupdelay"), ("线性幅度", "mag")]
-        for text, val in types:
-            ttk.Radiobutton(grp, text=text, variable=self.chart_type, value=val).pack(anchor=tk.W)
-
-        # ── 操作按钮 ──
-        grp = ttk.Frame(f, padding=8)
-        grp.pack(fill=tk.X, padx=6, pady=4)
-        ttk.Button(grp, text="🔄 生成图表", command=self._generate_chart).pack(fill=tk.X, pady=2)
-        ttk.Button(grp, text="📊 多文件对比", command=self._compare).pack(fill=tk.X, pady=2)
-        ttk.Button(grp, text="🔗 链式级联", command=self._cascade_chain).pack(fill=tk.X, pady=2)
-        ttk.Button(grp, text="💾 导出 CSV", command=self._export_csv).pack(fill=tk.X, pady=2)
-
-        # ── 对比选项 ──
-        grp = ttk.LabelFrame(f, text="📊 对比选项", padding=8)
-        grp.pack(fill=tk.X, padx=6, pady=4)
-        ttk.Checkbutton(grp, text="显示差异曲线 (Δ)", variable=self.show_diff).pack(anchor=tk.W)
+        # 对比选项
+        grp = ttk.LabelFrame(f, text="📊 对比选项", padding=4)
+        grp.pack(fill=tk.X, padx=2, pady=2)
+        ttk.Checkbutton(grp, text="显示差异 (Δ)", variable=self.show_diff).pack(anchor=tk.W)
         row = ttk.Frame(grp)
         row.pack(fill=tk.X)
-        ttk.Label(row, text="参考网络:").pack(side=tk.LEFT)
+        ttk.Label(row, text="参考:").pack(side=tk.LEFT)
         self.ref_var = tk.StringVar()
-        self.ref_combo = ttk.Combobox(row, textvariable=self.ref_var, width=15)
-        self.ref_combo.pack(side=tk.LEFT, padx=4)
+        self.ref_combo = ttk.Combobox(row, textvariable=self.ref_var, width=12)
+        self.ref_combo.pack(side=tk.LEFT, padx=2)
 
-        # ── LLM Agent ──
-        grp = ttk.LabelFrame(f, text="🤖 LLM Agent (自然语言)", padding=8)
-        grp.pack(fill=tk.X, padx=6, pady=4)
-        self.agent_entry = ttk.Entry(grp)
-        self.agent_entry.pack(fill=tk.X, pady=2)
-        self.agent_entry.bind("<Return>", lambda e: self._agent_chat())
-        ttk.Button(grp, text="发送", command=self._agent_chat).pack(fill=tk.X)
+    def _build_right(self, parent):
+        # 图表区域
+        chart_frame = ttk.Frame(parent)
+        chart_frame.pack(fill=tk.BOTH, expand=True)
 
-        # ── 状态栏 ──
-        self.status_var = tk.StringVar(value="就绪")
-        ttk.Label(f, textvariable=self.status_var, relief=tk.SUNKEN,
-                  anchor=tk.W, padding=2).pack(fill=tk.X, side=tk.BOTTOM)
+        self.fig = Figure(figsize=(8, 5), dpi=100, facecolor='white')
+        self.ax = self.fig.add_subplot(111)
 
-    def _build_right_panel(self, parent):
-        # 日志输出
-        grp = ttk.LabelFrame(parent, text="📝 日志", padding=4)
-        grp.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
-        self.log_text = tk.Text(grp, wrap=tk.WORD, state=tk.DISABLED,
-                                font=("Consolas", 10))
-        scroll = ttk.Scrollbar(grp, command=self.log_text.yview)
-        self.log_text.configure(yscrollcommand=scroll.set)
-        self.log_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        self.canvas = FigureCanvasTkAgg(self.fig, master=chart_frame)
+        self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
 
-    # ═══════════════════════════════════════
+        self.toolbar = NavigationToolbar2Tk(self.canvas, chart_frame)
+        self.toolbar.update()
+
+        self.ax.text(0.5, 0.5, "加载 .sNp 文件后选择参数\n点击「🔄 绘图」生成图表",
+                     transform=self.ax.transAxes, ha='center', va='center',
+                     fontsize=14, color='#aaa')
+        self.ax.set_xticks([])
+        self.ax.set_yticks([])
+        self.canvas.draw()
+
+    # ════════════════════════════════════
     #  日志
-    # ═══════════════════════════════════════
+    # ════════════════════════════════════
 
     def log(self, msg):
         self.log_text.configure(state=tk.NORMAL)
         self.log_text.insert(tk.END, msg + "\n")
         self.log_text.see(tk.END)
         self.log_text.configure(state=tk.DISABLED)
+        # 只保留最后 50 行
+        lines = int(self.log_text.index('end-1c').split('.')[0])
+        if lines > 50:
+            self.log_text.delete('1.0', f'{lines - 50}.0')
 
     def status(self, msg):
         self.status_var.set(msg)
         self.root.update_idletasks()
 
-    # ═══════════════════════════════════════
+    # ════════════════════════════════════
     #  文件加载
-    # ═══════════════════════════════════════
+    # ════════════════════════════════════
 
     def _load_files(self):
         paths = filedialog.askopenfilenames(
@@ -235,8 +390,7 @@ class SParamGUI:
 
         name = os.path.splitext(os.path.basename(path))[0]
         if name in self.networks:
-            base = name
-            idx = 2
+            base, idx = name, 2
             while f"{base}_{idx}" in self.networks:
                 idx += 1
             name = f"{base}_{idx}"
@@ -245,13 +399,10 @@ class SParamGUI:
         all_params = [f"S{m+1}{n+1}" for m in range(nports) for n in range(nports)]
 
         self.networks[name] = {
-            "path": path,
-            "_ntwk": ntwk,
+            "path": path, "_ntwk": ntwk,
             "nports": nports,
-            "f_min": float(ntwk.f[0]),
-            "f_max": float(ntwk.f[-1]),
-            "npoints": len(ntwk.f),
-            "params": all_params,
+            "f_min": float(ntwk.f[0]), "f_max": float(ntwk.f[-1]),
+            "npoints": len(ntwk.f), "params": all_params,
         }
         self.log(f"📂 {name}  {nports}端口  {len(ntwk.f)}点  "
                  f"{ntwk.f[0]/1e9:.4f}–{ntwk.f[-1]/1e9:.4f} GHz")
@@ -259,21 +410,18 @@ class SParamGUI:
         self.status("就绪")
 
     def _get_network(self, name):
-        """获取网络对象（直接返回已加载对象）。"""
         entry = self.networks.get(name)
-        if not entry:
-            return None
-        return entry["_ntwk"]
-    # ═══════════════════════════════════════
+        return entry["_ntwk"] if entry else None
+
+    # ════════════════════════════════════
     #  网络列表
-    # ═══════════════════════════════════════
+    # ════════════════════════════════════
 
     def _refresh_net_list(self):
         self.net_list.delete(0, tk.END)
         for name, entry in self.networks.items():
             self.net_list.insert(tk.END,
                 f"{name}  [{entry['nports']}端口, {entry['npoints']}点]")
-        # 更新参考网络下拉
         names = list(self.networks.keys())
         self.ref_combo["values"] = names
         if names and not self.ref_var.get():
@@ -302,9 +450,9 @@ class SParamGUI:
         self._refresh_net_list()
         self._refresh_param_list()
 
-    # ═══════════════════════════════════════
+    # ════════════════════════════════════
     #  参数选择
-    # ═══════════════════════════════════════
+    # ════════════════════════════════════
 
     def _refresh_param_list(self):
         self.param_list.delete(0, tk.END)
@@ -315,11 +463,9 @@ class SParamGUI:
         entry = self.networks.get(name)
         if not entry:
             return
-        self.param_label.config(
-            text=f"{name}  {entry['nports']}端口 · {entry['nports']**2}个参数")
+        self.param_label.config(text=f"{name}  {entry['nports']}端口 · {entry['nports']**2}参数")
         for p in entry["params"]:
             self.param_list.insert(tk.END, p)
-        # 恢复选中
         for i, p in enumerate(entry["params"]):
             if p in self.selected_params:
                 self.param_list.selection_set(i)
@@ -336,11 +482,7 @@ class SParamGUI:
         for m in range(1, nports + 1):
             for n in range(1, nports + 1):
                 s = f"S{m}{n}"
-                if kind == "all":
-                    new_params.append(s)
-                elif kind == "refl" and m == n:
-                    new_params.append(s)
-                elif kind == "trans" and m != n:
+                if kind == "all" or (kind == "refl" and m == n) or (kind == "trans" and m != n):
                     new_params.append(s)
         self.selected_params = list(dict.fromkeys(self.selected_params + new_params))
         self._refresh_param_list()
@@ -356,9 +498,19 @@ class SParamGUI:
                 self.selected_params.append(p)
         self._refresh_param_list()
 
-    # ═══════════════════════════════════════
+    # ════════════════════════════════════
     #  图表生成
-    # ═══════════════════════════════════════
+    # ════════════════════════════════════
+
+    def _clear_chart(self):
+        self.fig.clear()
+        self.ax = self.fig.add_subplot(111)
+
+    def _draw_chart(self, title=""):
+        if title:
+            self.ax.set_title(title, fontsize=11, fontweight='bold')
+        self.fig.tight_layout()
+        self.canvas.draw()
 
     def _generate_chart(self):
         if not self.selected:
@@ -368,102 +520,96 @@ class SParamGUI:
         name = self.selected[0]
         ntwk = self._get_network(name)
         if ntwk is None:
-            # 未加载 → 触发加载，等轮询
-            self.log(f"⏳ {name} 正在后台加载，请稍后再试...")
+            self.log(f"⏳ {name} 未加载")
             return
 
         params = self.selected_params if self.selected_params else None
         chart_type = self.chart_type.get()
 
+        self._clear_chart()
         try:
             if chart_type == "db":
-                fig = sp.plot_s_db(ntwk, params=sp._parse_params(ntwk, params),
-                                   title=f"{name} S-Parameters")
+                _mpl_plot_db(self.ax, ntwk,
+                             sp._parse_params(ntwk, params) if params else None)
+                title = f"{name} — S-Parameter Magnitude"
             elif chart_type == "deg":
-                fig = sp.plot_s_deg(ntwk, params=sp._parse_params(ntwk, params),
-                                    title=f"{name} Phase")
+                _mpl_plot_deg(self.ax, ntwk,
+                              sp._parse_params(ntwk, params) if params else None)
+                title = f"{name} — Phase"
             elif chart_type == "smith":
-                fig = sp.plot_s_smith(ntwk, params=sp._parse_params(ntwk, params),
-                                      title=f"{name} Smith Chart")
+                _mpl_plot_smith(self.ax, ntwk,
+                                sp._parse_params(ntwk, params) if params else None)
+                title = f"{name} — Smith Chart"
             elif chart_type == "vswr":
-                ports = [i for i in range(ntwk.nports)]
-                fig = sp.plot_vswr(ntwk, ports, title=f"{name} VSWR")
-            elif chart_type == "groupdelay":
-                fig = sp.plot_group_delay(ntwk, params=sp._parse_params(ntwk, params),
-                                          title=f"{name} Group Delay")
+                ports = list(range(ntwk.nports))
+                _mpl_plot_vswr(self.ax, ntwk, ports)
+                title = f"{name} — VSWR"
+            elif chart_type == "gd":
+                _mpl_plot_groupdelay(self.ax, ntwk,
+                                     sp._parse_params(ntwk, params) if params else None)
+                title = f"{name} — Group Delay"
             else:
-                fig = sp.plot_s_db(ntwk, params=sp._parse_params(ntwk, params),
-                                   title=f"{name} S-Parameters")
+                _mpl_plot_db(self.ax, ntwk)
+                title = f"{name} — S-Parameters"
 
-            self._show_fig(fig, f"{name} Chart")
+            self._draw_chart(title)
             self.log(f"📊 {name} 图表已生成")
         except Exception as e:
             self.log(f"❌ 生成失败: {e}")
 
-    def _show_fig(self, fig, title="Chart"):
-        """保存为 HTML 并用浏览器打开。"""
-        tmp = tempfile.NamedTemporaryFile(suffix=".html", delete=False)
-        fig.write_html(tmp.name, include_plotlyjs="cdn")
-        tmp.close()
-        webbrowser.open(f"file://{tmp.name}")
-        self.log(f"🌐 图表已在浏览器中打开: {os.path.basename(tmp.name)}")
-
-    # ═══════════════════════════════════════
+    # ════════════════════════════════════
     #  多文件对比
-    # ═══════════════════════════════════════
+    # ════════════════════════════════════
 
     def _compare(self):
         names = self.selected if len(self.selected) >= 2 else list(self.networks.keys())[:10]
         if len(names) < 2:
-            messagebox.showwarning("提示", "至少需要 2 个网络进行对比（Ctrl+点击多选）")
+            messagebox.showwarning("提示", "至少需要 2 个网络")
             return
 
-        # 确保全部已加载
-        for n in names:
-            ntwk = self._get_network(n)
-            if ntwk is None:
-                self.log(f"⏳ {n} 正在后台加载，请稍后再试...")
-                return
+        networks = [self.networks[n]["_ntwk"] for n in names
+                    if n in self.networks and self.networks[n].get("_ntwk")]
+        if len(networks) < 2:
+            self.log("需要至少 2 个已加载的网络")
+            return
 
-        networks = [self.networks[n]["_ntwk"] for n in names]
+        # 插值到共同频率
+        try:
+            interpolated = sp.interpolate_to_common_freq(
+                networks, npoints=max(len(n.f) for n in networks))
+        except Exception:
+            interpolated = networks
+
         ref_name = self.ref_var.get() or names[0]
         ref_idx = names.index(ref_name) if ref_name in names else 0
 
-        # 默认 S21
         param = (1, 0)
         if self.selected_params:
             p = self.selected_params[0]
             if p.startswith("S") and len(p) == 3:
                 param = (int(p[1]) - 1, int(p[2]) - 1)
 
-        try:
-            interpolated = sp.interpolate_to_common_freq(
-                networks, npoints=max(len(n.f) for n in networks))
-            fig = sp.plot_multi_db(interpolated, names=names, param=param,
-                                   title=f"{' vs '.join(names)} Comparison",
-                                   show_diff=self.show_diff.get(),
-                                   reference_idx=ref_idx)
-            self._show_fig(fig, "Comparison")
-            self.log(f"📊 对比图已生成: {' vs '.join(names)}")
-        except Exception as e:
-            self.log(f"❌ 对比失败: {e}")
+        self._clear_chart()
+        _mpl_compare(self.ax, interpolated, names, param,
+                     show_diff=self.show_diff.get(), ref_idx=ref_idx)
+        self._draw_chart(f"{' vs '.join(names)} — S{param[0]+1}{param[1]+1}")
+        self.log(f"📊 对比: {' vs '.join(names)}")
 
-    # ═══════════════════════════════════════
+    # ════════════════════════════════════
     #  链式级联
-    # ═══════════════════════════════════════
+    # ════════════════════════════════════
 
     def _cascade_chain(self):
         if len(self.selected) < 2:
-            messagebox.showwarning("提示", "请 Ctrl+点击选择 2+ 个网络（按级联顺序）")
+            messagebox.showwarning("提示", "请 Ctrl+点击选择 2+ 个网络")
             return
 
-        for n in self.selected:
-            ntwk = self._get_network(n)
-            if ntwk is None:
-                self.log(f"⏳ {n} 正在后台加载，请稍后再试...")
-                return
+        networks = [self.networks[n]["_ntwk"] for n in self.selected
+                    if n in self.networks]
+        if len(networks) < 2:
+            self.log("需要至少 2 个已加载的网络")
+            return
 
-        networks = [self.networks[n]["_ntwk"] for n in self.selected]
         try:
             result = sp.cascade_chain(networks)
             result_name = "_".join(self.selected)
@@ -472,25 +618,21 @@ class SParamGUI:
             tmp.close()
 
             self.networks[result_name] = {
-                "path": tmp.name,
-                "_ntwk": result,
-                "_loading": False,
+                "path": tmp.name, "_ntwk": result,
                 "nports": result.nports,
-                "f_min": float(result.f[0]),
-                "f_max": float(result.f[-1]),
+                "f_min": float(result.f[0]), "f_max": float(result.f[-1]),
                 "npoints": len(result.f),
                 "params": [f"S{m+1}{n+1}" for m in range(result.nports)
                            for n in range(result.nports)],
             }
             self._refresh_net_list()
-            self.log(f"🔗 链式级联完成: {' → '.join(self.selected)} → {result_name} "
-                     f"({result.nports}端口)")
+            self.log(f"🔗 级联: {' → '.join(self.selected)} → {result_name} ({result.nports}端口)")
         except Exception as e:
             self.log(f"❌ 级联失败: {e}")
 
-    # ═══════════════════════════════════════
-    #  导出 CSV
-    # ═══════════════════════════════════════
+    # ════════════════════════════════════
+    #  导出
+    # ════════════════════════════════════
 
     def _export_csv(self):
         if not self.selected:
@@ -498,13 +640,10 @@ class SParamGUI:
         name = self.selected[0]
         ntwk = self._get_network(name)
         if ntwk is None:
-            self.log(f"⏳ {name} 正在加载...")
             return
         path = filedialog.asksaveasfilename(
-            defaultextension=".csv",
-            filetypes=[("CSV", "*.csv")],
-            initialfile=f"{name}.csv",
-        )
+            defaultextension=".csv", filetypes=[("CSV", "*.csv")],
+            initialfile=f"{name}.csv")
         if not path:
             return
         try:
@@ -513,9 +652,9 @@ class SParamGUI:
         except Exception as e:
             self.log(f"❌ 导出失败: {e}")
 
-    # ═══════════════════════════════════════
+    # ════════════════════════════════════
     #  LLM Agent
-    # ═══════════════════════════════════════
+    # ════════════════════════════════════
 
     def _agent_chat(self):
         text = self.agent_entry.get().strip()
@@ -523,19 +662,12 @@ class SParamGUI:
         if not text:
             return
         if not code_agent.is_available():
-            self.log("⚠️ LLM 未配置。请创建 config.json 并设置 api_key。")
+            self.log("⚠️ LLM 未配置。创建 config.json 并设置 api_key")
             return
 
         self.log(f"🤖 你: {text}")
-
-        # 收集当前网络
-        nets_dict = {}
-        for name, entry in self.networks.items():
-            # 确保已加载
-            ntwk = entry.get("_ntwk")
-            if ntwk is None:
-                ntwk = self._get_network(name)
-            nets_dict[name] = {"path": entry["path"], "nports": entry["nports"]}
+        nets_dict = {n: {"path": e["path"], "nports": e["nports"]}
+                     for n, e in self.networks.items()}
 
         def _run():
             try:
@@ -543,19 +675,20 @@ class SParamGUI:
                 if "error" in result:
                     self.root.after(0, lambda: self.log(f"❌ {result['error']}"))
                     return
-                code = result.get("code", "")
                 exec_r = result.get("exec_result", {})
                 if exec_r.get("ok") and exec_r.get("figure_json"):
-                    fig_data = exec_r["figure_json"]["data"]
-                    fig_layout = exec_r["figure_json"]["layout"]
+                    # Agent 返回 Plotly 图 → 用浏览器打开（一次性兼容）
                     import plotly.graph_objects as go
-                    fig = go.Figure(data=fig_data, layout=fig_layout)
-                    self.root.after(0, lambda: self._show_fig(fig, text[:60]))
-                    self.root.after(0, lambda: self.log(f"✅ {result.get('reply', '完成')}"))
-                elif exec_r.get("error"):
-                    self.root.after(0, lambda: self.log(f"❌ 执行错误: {exec_r['error'][:200]}"))
-                else:
-                    self.root.after(0, lambda: self.log(f"✅ {result.get('reply', '完成')}"))
+                    fig = go.Figure(data=exec_r["figure_json"]["data"],
+                                    layout=exec_r["figure_json"]["layout"])
+                    tmp = tempfile.NamedTemporaryFile(suffix=".html", delete=False)
+                    fig.write_html(tmp.name, include_plotlyjs="cdn")
+                    tmp.close()
+                    import webbrowser
+                    webbrowser.open(f"file://{tmp.name}")
+                    self.root.after(0, lambda: self.log("🌐 Agent 图表已在浏览器打开"))
+                self.root.after(0, lambda: self.log(
+                    f"✅ {result.get('reply', '完成')}"))
             except Exception as e:
                 self.root.after(0, lambda: self.log(f"❌ Agent 异常: {e}"))
 
