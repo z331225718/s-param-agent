@@ -39,6 +39,11 @@ def index():
     return render_template("dashboard.html")
 
 
+@app.route("/favicon.ico")
+def favicon():
+    return "", 204  # 无 favicon，返回空 204 消除 404 日志噪音
+
+
 @app.route("/health")
 def health():
     return jsonify({"status": "ok", "libraries": {"scikit-rf": rf.__version__, "plotly": plotly.__version__}})
