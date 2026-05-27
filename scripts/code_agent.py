@@ -35,12 +35,11 @@ _BASE = _base_dir()
 ALLOWED_IMPORTS = {
     "skrf",
     "numpy",
-    "plotly.graph_objects",
-    "plotly.subplots",
-    "plotly",
-    "json",           # 仅用于 JSON 序列化（安全）
-    "math",           # 数学函数
-    "textwrap",       # 文本处理
+    "matplotlib",
+    "matplotlib.pyplot",
+    "json",
+    "math",
+    "textwrap",
     "itertools",
     "functools",
     "collections",
@@ -56,7 +55,7 @@ ALLOWED_IMPORTS = {
 ALLOWED_PREFIXES = [
     "skrf",
     "numpy",
-    "plotly",
+    "matplotlib",
     "json",
     "math",
     "textwrap",
@@ -83,10 +82,8 @@ FORBIDDEN_BUILTINS = {
 # 无条件物理删除的危险调用（在 AST 校验前用正则移除）
 import re as _re
 _DANGEROUS_PATTERNS = [
-    (r'^\s*fig\.show\s*\(\s*\)', '# [removed] fig.show()'),
-    (r'^\s*fig\.write_html\s*\(', '# [removed] fig.write_html()'),
-    (r'^\s*fig\.write_image\s*\(', '# [removed] fig.write_image()'),
     (r'^\s*plt\.show\s*\(\s*\)', '# [removed] plt.show()'),
+    (r'^\s*fig\.savefig\s*\(', '# [removed] fig.savefig()'),
 ]
 
 # 允许 open() 写入的扩展名
@@ -119,27 +116,35 @@ ntwk = rf.Network("/path/to/LNA.s2p")
 ```python
 import skrf as rf
 import numpy as np
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
+import matplotlib.pyplot as plt
+```
+
+### 图表生成规范（matplotlib）
+**必须用 matplotlib 画图，不要用 plotly！** 标准模板：
+```python
+import matplotlib.pyplot as plt
+fig, ax = plt.subplots(figsize=(10, 5))
+freq_ghz = ntwk.f / 1e9
+ax.plot(freq_ghz, ntwk.s_db[:, 0, 0], label='S11')
+ax.set_xscale('log')  # RF 行业标准：对数频率轴
+ax.set_xlabel('Frequency (GHz)')
+ax.set_ylabel('Magnitude (dB)')
+ax.grid(True, which='both', alpha=0.3)
+ax.legend()
 ```
 
 ### ⚠️ 铁律（违反必错）
-- **频率必须转 GHz**：`ntwk.f` 单位是 Hz，直接用会出现 1B/2B 的丑陋标签。
-  所有 X 轴必须用 `freq_ghz = ntwk.f / 1e9`，然后 `x=freq_ghz`。
-  同时设 `xaxis_title='Frequency (GHz)'`。
-- **S/Z/Y 参数是 3D 数组**：必须用 `[:, m, n]` 索引，不是 `[m, n]`！
-- **禁止 Plotly 自动 SI 前缀**：每张图必须加这两行，强制科学计数法：
-  ```python
-  fig.update_xaxes(exponentformat='power', showexponent='all')
-  fig.update_yaxes(exponentformat='power', showexponent='all')
-  ```
-  否则会出现 μ (micro)、k (kilo)、B (billion) 等丑陋标签！
+- **X 轴必须对数**：`ax.set_xscale('log')`，RF 行业标准
+- **频率必须转 GHz**：`ntwk.f` 是 Hz，必须 `freq_ghz = ntwk.f / 1e9`
+- **S 参数是 3D 数组**：`ntwk.s_db[:, m, n]`，不是 `[m, n]`
+- **画多条曲线**用多个 `ax.plot()` 调用，不同颜色自动分配
+- **标题用英文**，避免中文字体问题
 
 ### 禁止
 - 不要 import os, sys, subprocess, requests, urllib, shutil
 - 不要使用 eval(), exec(), __import__()
 - 不要写死绝对路径
-- 不要调用 fig.show() 或 fig.write_html()
+- **不要使用 plotly！用 matplotlib！**
 - **不要直接用 ntwk.f 作为 X 轴数据！必须先除以 1e9！**
 - **不要使用 rf.Network() 读取文件！用 _nets 字典！**
 
@@ -323,10 +328,16 @@ result = {{"ok": False, "figure_json": None, "stdout": "", "stderr": "", "error"
 try:
 {_indent(code, "    ")}
 
-    # 提取 fig 变量
+    # 提取 matplotlib figure
     fig = locals().get("fig")
-    if fig is not None and hasattr(fig, "to_json"):
-        result["figure_json"] = json.loads(fig.to_json())
+    if fig is not None and hasattr(fig, "savefig"):
+        import base64 as _b64, io as _io
+        buf = _io.BytesIO()
+        fig.savefig(buf, format="png", dpi=100, bbox_inches="tight")
+        buf.seek(0)
+        result["figure_png_b64"] = _b64.b64encode(buf.read()).decode("ascii")
+        import matplotlib.pyplot as _plt
+        _plt.close(fig)
     result["ok"] = True
 except Exception as e:
     result["error"] = f"{{type(e).__name__}}: {{e}}\\n{{traceback.format_exc()}}"
@@ -541,7 +552,7 @@ def generate_code(user_text: str, file_path: str = None, networks: dict = None) 
         file_paths = {"file_path": file_path} if file_path else {}
         exec_result = execute_code(code, file_paths, networks=networks)
 
-        if exec_result.get("ok") and exec_result.get("figure_json"):
+        if exec_result.get("ok") and (exec_result.get("figure_json") or exec_result.get("figure_png_b64")):
             # 成功！
             history.append({"attempt": attempt, "code": code, "ok": True})
 

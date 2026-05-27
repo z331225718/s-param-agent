@@ -27,8 +27,18 @@ import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 
-# 中文字体
-plt.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei', 'DejaVu Sans']
+# 中文字体（逐个尝试，找到第一个可用的）
+_AVAILABLE_FONTS = [f.name for f in matplotlib.font_manager.fontManager.ttflist]
+_FONT_CANDIDATES = ['Microsoft YaHei', 'SimHei', 'WenQuanYi Micro Hei',
+                    'Noto Sans CJK SC', 'Noto Sans SC', 'Source Han Sans SC',
+                    'Arial Unicode MS', 'DejaVu Sans', 'sans-serif']
+_FOUND_FONT = 'sans-serif'
+for _f in _FONT_CANDIDATES:
+    if _f in _AVAILABLE_FONTS:
+        _FOUND_FONT = _f
+        break
+plt.rcParams['font.sans-serif'] = [_FOUND_FONT, 'DejaVu Sans', 'sans-serif']
+plt.rcParams['font.family'] = 'sans-serif'
 plt.rcParams['axes.unicode_minus'] = False
 
 # ═══════════════════════════════════════════
@@ -502,6 +512,22 @@ class SParamGUI:
     #  图表生成
     # ════════════════════════════════════
 
+    def _show_image(self, pil_image, title="Agent Chart"):
+        """在图表区显示 PIL Image（Agent 生成结果）。"""
+        from PIL import ImageTk
+        cw = self.chart_frame.winfo_width()
+        ch = self.chart_frame.winfo_height()
+        if cw < 10: cw = 800
+        if ch < 10: ch = 500
+        iw, ih = pil_image.size
+        scale = min(cw / iw, ch / ih, 1.0)
+        if scale < 1.0:
+            pil_image = pil_image.resize((int(iw * scale), int(ih * scale)))
+        self._current_img_tk = ImageTk.PhotoImage(pil_image)
+        self.chart_canvas.delete("all")
+        self.chart_canvas.create_image(cw // 2, ch // 2, image=self._current_img_tk, anchor=tk.CENTER)
+        self.status(title)
+
     def _clear_chart(self):
         self.fig.clear()
         self.ax = self.fig.add_subplot(111)
@@ -676,17 +702,14 @@ class SParamGUI:
                     self.root.after(0, lambda: self.log(f"❌ {result['error']}"))
                     return
                 exec_r = result.get("exec_result", {})
-                if exec_r.get("ok") and exec_r.get("figure_json"):
-                    # Agent 返回 Plotly 图 → 用浏览器打开（一次性兼容）
-                    import plotly.graph_objects as go
-                    fig = go.Figure(data=exec_r["figure_json"]["data"],
-                                    layout=exec_r["figure_json"]["layout"])
-                    tmp = tempfile.NamedTemporaryFile(suffix=".html", delete=False)
-                    fig.write_html(tmp.name, include_plotlyjs="cdn")
-                    tmp.close()
-                    import webbrowser
-                    webbrowser.open(f"file://{tmp.name}")
-                    self.root.after(0, lambda: self.log("🌐 Agent 图表已在浏览器打开"))
+                if exec_r.get("ok") and exec_r.get("figure_png_b64"):
+                    # Agent 返回 matplotlib PNG → 嵌入界面
+                    import base64, io as _io2
+                    from PIL import Image, ImageTk
+                    img_data = base64.b64decode(exec_r["figure_png_b64"])
+                    img = Image.open(_io2.BytesIO(img_data))
+                    self.root.after(0, lambda: self._show_image(img, text[:60]))
+                    self.root.after(0, lambda: self.log("✅ Agent 图表已生成"))
                 self.root.after(0, lambda: self.log(
                     f"✅ {result.get('reply', '完成')}"))
             except Exception as e:
