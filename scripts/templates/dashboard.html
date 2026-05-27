@@ -100,21 +100,6 @@
   }
   .param-tag.active { border-color: var(--accent); background: #1a3a30; color: var(--accent); }
 
-  .chart-type-tabs { display: flex; gap: 4px; flex-wrap: wrap; }
-  .chart-type-tab {
-    padding: 6px 14px; border-radius: 4px; cursor: pointer;
-    font-size: 0.8rem; border: 1px solid var(--border);
-    transition: all 0.15s;
-  }
-  .chart-type-tab.active { background: var(--accent); color: #000; border-color: var(--accent); font-weight: 600; }
-
-  /* 频率输入 */
-  .freq-row { display: flex; gap: 8px; align-items: center; }
-  .freq-row input {
-    width: 90px; background: #12122a; border: 1px solid var(--border);
-    color: var(--text); padding: 6px 10px; border-radius: 4px; font-size: 0.85rem;
-  }
-
   /* 操作按钮行 */
   .action-row { display: flex; gap: 8px; flex-wrap: wrap; }
 
@@ -242,36 +227,6 @@
   <div class="section">
     <h3>🎯 选择 S 参数</h3>
     <div id="paramTags" class="param-tags"><p style="color:#555;font-size:0.78rem;">请先选择文件</p></div>
-  </div>
-
-  <!-- 图表类型 -->
-  <div class="section">
-    <h3>📊 图表类型</h3>
-    <div class="chart-type-tabs">
-      <span class="chart-type-tab active" data-type="db">dB 幅度</span>
-      <span class="chart-type-tab" data-type="deg">相位</span>
-      <span class="chart-type-tab" data-type="smith">Smith 圆图</span>
-      <span class="chart-type-tab" data-type="vswr">VSWR</span>
-      <span class="chart-type-tab" data-type="groupdelay">群时延</span>
-      <span class="chart-type-tab" data-type="mag">线性幅度</span>
-    </div>
-  </div>
-
-  <!-- 频率范围 -->
-  <div class="section">
-    <h3>🎚️ 频率范围 (GHz)</h3>
-    <div class="freq-row">
-      <input type="number" id="freqStart" placeholder="起始" step="0.001">
-      <span>→</span>
-      <input type="number" id="freqStop" placeholder="终止" step="0.001">
-      <button id="resetFreq">重置</button>
-    </div>
-  </div>
-
-  <!-- 标题 -->
-  <div class="section">
-    <h3>🏷️ 图表标题</h3>
-    <input type="text" id="chartTitle" placeholder="自定义标题（可选）" style="width:100%;background:#12122a;border:1px solid var(--border);color:var(--text);padding:8px;border-radius:4px;">
   </div>
 
   <!-- 操作 -->
@@ -548,36 +503,16 @@ function toggleParam(p) {
   renderParamTags();
 }
 
-// ── 图表类型 ──
-document.querySelectorAll('.chart-type-tab').forEach(tab => {
-  tab.addEventListener('click', () => {
-    document.querySelectorAll('.chart-type-tab').forEach(t => t.classList.remove('active'));
-    tab.classList.add('active');
-    state.chartType = tab.dataset.type;
-  });
-});
-
-// ── 频率范围 ──
-document.getElementById('resetFreq').addEventListener('click', () => {
-  document.getElementById('freqStart').value = '';
-  document.getElementById('freqStop').value = '';
-});
-
 // ── 生成图表 ──
 async function generateChart() {
   if (!state.selectedFile) { toast('请先选择文件', 'error'); return; }
   if (!state.selectedParams.length) { toast('请选择至少一个 S 参数', 'error'); return; }
 
-  const freqStart = parseFloat(document.getElementById('freqStart').value) || null;
-  const freqStop = parseFloat(document.getElementById('freqStop').value) || null;
-  const freqRange = freqStart != null && freqStop != null ? [freqStart * 1e9, freqStop * 1e9] : null;
-
   const payload = {
     session: 'default',
-    type: state.chartType,
+    type: 'db',
     networks: [{ name: state.selectedFile, params: state.selectedParams, label: state.selectedFile }],
-    freq_range: freqRange,
-    title: document.getElementById('chartTitle').value || `${state.selectedFile} - ${state.selectedParams.join(', ')}`,
+    title: `${state.selectedFile} - ${state.selectedParams.join(', ')}`,
   };
 
   try {
@@ -605,9 +540,9 @@ async function exportHTML() {
   }
   const payload = {
     session: 'default',
-    type: state.chartType,
+    type: 'db',
     networks: [{ name: state.selectedFile, params: state.selectedParams, label: state.selectedFile }],
-    title: document.getElementById('chartTitle').value || `${state.selectedFile} Report`,
+    title: `${state.selectedFile} Report`,
   };
   const res = await fetch('/api/chart/html', {
     method: 'POST',
@@ -633,14 +568,11 @@ async function exportCSV() {
   if (!state.selectedFile || !state.selectedParams.length) {
     toast('请先选择文件和参数', 'error'); return;
   }
-  const freqStart = parseFloat(document.getElementById('freqStart').value) || null;
-  const freqStop = parseFloat(document.getElementById('freqStop').value) || null;
 
   const payload = {
     session: 'default',
     network: state.selectedFile,
     params: state.selectedParams,
-    freq_range: freqStart != null && freqStop != null ? [freqStart * 1e9, freqStop * 1e9] : null,
   };
   const res = await fetch('/api/export/csv', {
     method: 'POST',
@@ -654,13 +586,10 @@ async function exportCSV() {
 
 async function exportTouchstone() {
   if (!state.selectedFile) { toast('请先选择文件', 'error'); return; }
-  const freqStart = parseFloat(document.getElementById('freqStart').value) || null;
-  const freqStop = parseFloat(document.getElementById('freqStop').value) || null;
 
   const payload = {
     session: 'default',
     network: state.selectedFile,
-    freq_range: freqStart != null && freqStop != null ? [freqStart * 1e9, freqStop * 1e9] : null,
   };
   const res = await fetch('/api/export/touchstone', {
     method: 'POST',
@@ -853,14 +782,10 @@ async function doCompare() {
   const files = state.selectedFiles.length >= 2 ? state.selectedFiles : Object.keys(state.networks).slice(0, 10);
   if (files.length < 2) { toast('请至少选择 2 个网络进行对比', 'error'); return; }
   const params = state.selectedParams.length > 0 ? state.selectedParams : ['S21'];
-  const fs = parseFloat(document.getElementById('freqStart').value) || null;
-  const fe = parseFloat(document.getElementById('freqStop').value) || null;
-  const fr = fs != null && fe != null ? [fs * 1e9, fe * 1e9] : null;
   const payload = {
-    session: 'default', networks: files, params: params, chart_type: state.chartType,
+    session: 'default', networks: files, params: params, chart_type: 'db',
     show_diff: state.showDiff, reference: state.compareRef || files[0],
-    title: document.getElementById('chartTitle').value || `${files.join(' vs ')} Comparison`,
-    freq_range: fr,
+    title: `${files.join(' vs ')} Comparison`,
   };
   try {
     const res = await fetch('/api/compare', {
