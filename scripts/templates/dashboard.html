@@ -237,43 +237,6 @@
     <div class="action-row">
       <button class="primary" onclick="generateChart()">🔄 生成图表</button>
       <button onclick="exportHTML()">📄 导出 HTML</button>
-      <button onclick="showCascadeModal()">🔗 级联</button>
-    </div>
-  </div>
-
-  <!-- 链式级联 -->
-  <div class="section" id="chainSection" style="display:none;">
-    <h3>🔗 链式级联</h3>
-    <div id="chainBuilder" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:8px;">
-      <span style="color:#555;font-size:0.8rem;">选择网络顺序:</span>
-    </div>
-    <div class="action-row">
-      <button class="primary" onclick="doChainCascade()">⚡ 执行链式级联</button>
-      <button onclick="clearChain()">清除</button>
-    </div>
-  </div>
-
-  <!-- 多文件对比 -->
-  <div class="section" id="compareSection" style="display:none;">
-    <h3>📊 多文件对比</h3>
-    <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
-      <label style="font-size:0.8rem;">参考基准:</label>
-      <select id="compareRef" onchange="state.compareRef=this.value" style="flex:1;"></select>
-    </div>
-    <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
-      <label style="font-size:0.8rem;display:flex;align-items:center;gap:4px;">
-        <input type="checkbox" id="showDiffChk" checked onchange="state.showDiff=this.checked"> 显示差异曲线
-      </label>
-    </div>
-    <div class="action-row">
-      <button class="primary" onclick="doCompare()">📊 生成对比图</button>
-    </div>
-  </div>
-
-  <div class="section">
-    <div class="action-row">
-      <button onclick="exportCSV()">📊 导出 CSV</button>
-      <button onclick="exportTouchstone()">💾 导出 Touchstone</button>
     </div>
   </div>
 </div>
@@ -307,32 +270,13 @@
 <!-- Toast -->
 <div id="toast"></div>
 
-<!-- 级联 Modal -->
-<div id="cascadeModal" class="modal-overlay" style="display:none;">
-  <div class="modal">
-    <h3>🔗 级联网络</h3>
-    <label>网络 A</label>
-    <select id="cascadeA"></select>
-    <label>网络 B</label>
-    <select id="cascadeB"></select>
-    <div class="btn-row">
-      <button onclick="hideCascadeModal()">取消</button>
-      <button class="primary" onclick="doCascade()">级联</button>
-    </div>
-  </div>
-</div>
-
 <script>
 // ── 全局状态 ──
 const state = {
   networks: {},     // {name: {nports, f_min, f_max, npoints, params}}
   selectedFile: null,
-  selectedFiles: [],   // multi-select for comparison
   selectedParams: [],
   chartType: 'db',
-  chain: [],            // chain cascade order
-  showDiff: true,
-  compareRef: '',
 };
 
 // ── 文件上传 ──
@@ -380,20 +324,12 @@ function renderFileList() {
     renderParamTags();
     return;
   }
-  const multiMode = state.selectedFiles.length > 1;
   el.innerHTML = names.map(name => {
     const n = state.networks[name];
-    const isSelected = state.selectedFiles.includes(name);
-    const isPrimary = state.selectedFile === name;
-    const selClass = isSelected ? ' selected' : '';
-    const chk = multiMode || state.selectedFiles.length >= 1 ?
-      `<input type="checkbox" class="file-chk" ${isSelected ? 'checked' : ''} onclick="toggleMultiSelect('${name}', event)" title="多选对比">` : '';
-    const loaded = n.loaded !== false;
-    const loadBadge = loaded ? '' : ' <span style="font-size:0.7rem;color:#ffaa00;">⏳ 未载入</span>';
+    const selClass = state.selectedFile === name ? ' selected' : '';
     return `<div class="file-card${selClass}" onclick="selectFile('${name}')">
-      ${chk}
       <div class="info">
-        <div class="name">${isPrimary ? '★ ' : ''}${name}${loadBadge}</div>
+        <div class="name">${name}</div>
         <div class="meta">${n.nports}端口 · ${n.f_min.toFixed(3)}–${n.f_max.toFixed(3)} GHz · ${n.npoints}点</div>
       </div>
       <button class="remove" onclick="event.stopPropagation();removeFile('${name}')">✕</button>
@@ -401,77 +337,20 @@ function renderFileList() {
   }).join('');
 }
 
-async function selectFile(name) {
-  // Toggle in multi-select list
-  const idx = state.selectedFiles.indexOf(name);
-  if (idx >= 0) {
-    state.selectedFiles.splice(idx, 1);
-  } else {
-    state.selectedFiles.push(name);
-  }
-  // Single-select: set the primary
+function selectFile(name) {
   state.selectedFile = name;
   state.selectedParams = [];
   renderFileList();
   renderParamTags();
-  updateCompareRef();
-
-  // 自动触发延迟加载（后台线程，轮询状态）
-  const net = state.networks[name];
-  if (net && !net.loaded && !net._loading && net.nports > 8) {
-    net._loading = true;
-    toast(`⏳ 正在后台加载 ${name} 的 S 矩阵 (${net.nports}端口, ${net.npoints}点)...`);
-    try {
-      // 触发加载
-      await fetch(`/api/networks/${encodeURIComponent(name)}/load?session=default`, { method: 'POST' });
-      // 轮询直到完成
-      await pollLoadStatus(name);
-    } catch (e) {
-      toast(`⚠️ ${name} 加载失败: ${e.message}`, 'error');
-      net._loading = false;
-    }
-  }
-}
-
-function toggleMultiSelect(name, ev) {
-  ev.stopPropagation();
-  const idx = state.selectedFiles.indexOf(name);
-  if (idx >= 0) {
-    state.selectedFiles.splice(idx, 1);
-  } else {
-    state.selectedFiles.push(name);
-  }
-  if (state.selectedFiles.length === 0) state.selectedFile = null;
-  else if (!state.selectedFile || !state.selectedFiles.includes(state.selectedFile)) {
-    state.selectedFile = state.selectedFiles[0];
-  }
-  renderFileList();
-  renderParamTags();
-  updateCompareRef();
-}
-
-function updateCompareRef() {
-  const sel = document.getElementById('compareRef');
-  if (!sel) return;
-  const cur = sel.value;
-  sel.innerHTML = state.selectedFiles.map(n => `<option value="${n}" ${n === cur ? 'selected' : ''}>${n}</option>`).join('');
-  if (!state.compareRef || !state.selectedFiles.includes(state.compareRef)) {
-    state.compareRef = state.selectedFiles[0] || '';
-    sel.value = state.compareRef;
-  }
 }
 
 async function removeFile(name) {
   await fetch(`/api/networks/${name}?session=default`, { method: 'DELETE' });
   delete state.networks[name];
   if (state.selectedFile === name) state.selectedFile = null;
-  state.selectedFiles = state.selectedFiles.filter(n => n !== name);
-  state.chain = state.chain.filter(n => n !== name);
   state.selectedParams = [];
   renderFileList();
   renderParamTags();
-  updateCompareUI();
-  updateChainUI();
   toast(`已移除: ${name}`);
 }
 
@@ -718,8 +597,6 @@ async function exportHTML() {
   });
   const data = await res.json();
   if (data.error) { toast(data.error, 'error'); return; }
-
-  // 触发下载
   const blob = new Blob([data.html], { type: 'text/html' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -728,68 +605,6 @@ async function exportHTML() {
   a.click();
   URL.revokeObjectURL(url);
   toast('HTML 报告已下载');
-}
-
-// ── 导出 CSV ──
-async function exportCSV() {
-  if (!state.selectedFile || !state.selectedParams.length) {
-    toast('请先选择文件和参数', 'error'); return;
-  }
-
-  const payload = {
-    session: 'default',
-    network: state.selectedFile,
-    params: state.selectedParams,
-  };
-  const res = await fetch('/api/export/csv', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
-  const blob = await res.blob();
-  downloadBlob(blob, `${state.selectedFile}_export.csv`);
-  toast('CSV 已导出');
-}
-
-async function exportTouchstone() {
-  if (!state.selectedFile) { toast('请先选择文件', 'error'); return; }
-
-  const payload = {
-    session: 'default',
-    network: state.selectedFile,
-  };
-  const res = await fetch('/api/export/touchstone', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
-  const blob = await res.blob();
-  const n = state.networks[state.selectedFile].nports;
-  downloadBlob(blob, `${state.selectedFile}_export.s${n}p`);
-  toast('Touchstone 已导出');
-}
-
-async function doCascade() {
-  const a = document.getElementById('cascadeA').value;
-  const b = document.getElementById('cascadeB').value;
-  if (!a || !b) { toast('请选择两个网络', 'error'); return; }
-  try {
-    const res = await fetch('/api/cascade', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ session: 'default', network_a: a, network_b: b }),
-    });
-    const data = await res.json();
-    if (data.error) { toast(data.error, 'error'); return; }
-    state.networks[data.name] = data;
-    state.selectedFile = data.name;
-    renderFileList();
-    renderParamTags();
-    hideCascadeModal();
-    toast(`级联完成: ${data.name}`);
-  } catch (err) {
-    toast('级联失败: ' + err.message, 'error');
-  }
 }
 
 // ── 工具函数 ──
@@ -806,18 +621,6 @@ function toast(msg, type) {
   el.className = type === 'error' ? 'error show' : 'show';
   clearTimeout(el._timeout);
   el._timeout = setTimeout(() => el.classList.remove('show', 'error'), 2500);
-}
-
-function showCascadeModal() {
-  const names = Object.keys(state.networks);
-  if (names.length < 2) { toast('需要至少两个网络才能级联', 'error'); return; }
-  const opts = names.map(n => `<option value="${n}">${n}</option>`).join('');
-  document.getElementById('cascadeA').innerHTML = opts;
-  document.getElementById('cascadeB').innerHTML = opts;
-  document.getElementById('cascadeModal').style.display = 'flex';
-}
-function hideCascadeModal() {
-  document.getElementById('cascadeModal').style.display = 'none';
 }
 
 // ── 🤖 Agent Chat ──
@@ -897,121 +700,18 @@ function addChatMsg(cls, text) {
   container.scrollTop = container.scrollHeight;
 }
 
-// ── 链式级联 ──
-function updateChainUI() {
-  const section = document.getElementById('chainSection');
-  const builder = document.getElementById('chainBuilder');
-  if (!section || !builder) return;
-  section.style.display = state.chain.length >= 1 || state.selectedFiles.length >= 2 ? 'block' : 'none';
-  if (state.chain.length === 0 && state.selectedFiles.length >= 2) {
-    state.chain = [...state.selectedFiles];
-  }
-  const names = Object.keys(state.networks);
-  builder.innerHTML = '<span style="color:#555;font-size:0.8rem;">链顺序:</span> ' +
-    state.chain.map((n, i) =>
-      `<select onchange="moveChainItem(${i}, this.value)" style="background:#12122a;color:var(--text);border:1px solid var(--border);border-radius:4px;padding:4px 8px;font-size:0.8rem;">` +
-        names.map(nn => `<option value="${nn}" ${nn === n ? 'selected' : ''}>${nn}</option>`).join('') +
-      `</select>`
-    ).join(' <span style="color:var(--accent);font-weight:bold;">→</span> ');
-}
 
-function moveChainItem(idx, newName) { state.chain[idx] = newName; }
-function clearChain() { state.chain = []; document.getElementById('chainSection').style.display = 'none'; }
-
-async function doChainCascade() {
-  if (state.chain.length < 2) {
-    state.chain = [...state.selectedFiles];
-    if (state.chain.length < 2) { toast('请至少选择 2 个网络进行级联', 'error'); return; }
-  }
-  try {
-    const res = await fetch('/api/cascade/chain', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ session: 'default', chain: state.chain, result_name: state.chain.join('_') }),
-    });
-    const data = await res.json();
-    if (data.error) { toast(data.error, 'error'); return; }
-    state.networks[data.name] = data;
-    state.selectedFile = data.name; state.selectedFiles = [data.name]; state.chain = [];
-    renderFileList(); renderParamTags(); updateChainUI(); updateCompareUI();
-    toast(`链式级联完成: ${data.name} (${data.nports}端口)`);
-  } catch (err) { toast('级联失败: ' + err.message, 'error'); }
-}
-
-// ── 多文件对比 ──
-function updateCompareUI() {
-  const section = document.getElementById('compareSection');
-  if (!section) return;
-  section.style.display = state.selectedFiles.length >= 2 ? 'block' : 'none';
-  if (state.selectedFiles.length >= 2) { updateCompareRef(); updateChainUI(); }
-}
-
-async function doCompare() {
-  const files = state.selectedFiles.length >= 2 ? state.selectedFiles : Object.keys(state.networks).slice(0, 10);
-  if (files.length < 2) { toast('请至少选择 2 个网络进行对比', 'error'); return; }
-
-  // 预加载未载入的网络（后台线程 + 轮询）
-  const unloaded = files.filter(f => state.networks[f] && !state.networks[f].loaded);
-  if (unloaded.length > 0) {
-    toast(`⏳ 正在后台加载 ${unloaded.length} 个网络的 S 矩阵...`);
-    for (const name of unloaded) {
-      try {
-        await fetch(`/api/networks/${encodeURIComponent(name)}/load?session=default`, { method: 'POST' });
-      } catch (e) { /* continue */ }
-    }
-    // 并行轮询所有
-    await Promise.all(unloaded.map(n => pollLoadStatus(n, 300)));
-    renderFileList();
-  }
-
-  const params = state.selectedParams.length > 0 ? state.selectedParams : ['S21'];
-  const payload = {
-    session: 'default', networks: files, params: params, chart_type: 'db',
-    show_diff: state.showDiff, reference: state.compareRef || files[0],
-    title: `${files.join(' vs ')} Comparison`,
-  };
-  try {
-    const res = await fetch('/api/compare', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
-    });
-    const data = await res.json();
-    if (data.error) { toast(data.error, 'error'); return; }
-    document.getElementById('placeholder').style.display = 'none';
-    Plotly.newPlot('chart', data.chart.data, data.chart.layout, { responsive: true, displaylogo: false });
-    document.getElementById('chartLabel').textContent = data.title || 'Comparison';
-    toast('对比图已生成');
-    if (data.diff_stats) {
-      const s = data.diff_stats;
-      let msg = `📊 差异统计 (vs ${s.reference}):\\n`;
-      for (const c of s.comparisons) {
-        msg += `  ${c.name}: mean Δ=${c.mean_diff_db.toFixed(2)} dB, max|Δ|=${c.max_diff_db.toFixed(2)} dB, RMS=${c.rms_diff_db.toFixed(2)} dB\\n`;
-      }
-      addChatMsg('agent', msg);
-    }
-  } catch (err) { toast('对比失败: ' + err.message, 'error'); }
-}
-
-// ── 多文件时自动走对比 ──
-const _origGenerateChart = generateChart;
-generateChart = async function() {
-  if (state.selectedFiles.length >= 2 && state.selectedParams.length > 0) { return doCompare(); }
-  return _origGenerateChart();
-};
 
 async function refreshNetworkList() {
   try {
     const res = await fetch('/api/networks?session=default');
     const data = await res.json();
     state.networks = data.networks || {};
-    const names = Object.keys(state.networks);
-    state.selectedFiles = state.selectedFiles.filter(n => names.includes(n));
-    state.chain = state.chain.filter(n => names.includes(n));
     renderFileList();
-    if (!state.selectedFile || !names.includes(state.selectedFile)) {
-      state.selectedFile = names[0] || null;
+    if (!state.selectedFile || !state.networks[state.selectedFile]) {
+      state.selectedFile = Object.keys(state.networks)[0] || null;
     }
     if (state.selectedFile) renderParamTags();
-    updateCompareUI();
-    updateChainUI();
   } catch(e) {}
 }
 </script>
