@@ -268,6 +268,40 @@ def extract_code(llm_response: str) -> Optional[str]:
     return None
 
 
+# ── 对数轴关键词检测 ─────────────────────────────────────────────
+
+_LOG_KEYWORDS = [
+    "log scale", "log-scale", "logscale",
+    "log freq", "log frequency",
+    "对数", "对数轴", "对数坐标", "对数频率",
+    "set_xscale", "type='log'", 'type="log"',
+]
+
+_LOG_INJECTION = '''
+# [injected] log scale format
+fig.update_xaxes(
+    type='log',
+    tickformat='.0e',
+    dtick=1,
+    showgrid=True, gridcolor='#c0c0c0',
+    minor=dict(showgrid=True, gridcolor='#e0e0e0', griddash='dash', showticklabels=False),
+    exponentformat='power', showexponent='all',
+)
+fig.update_yaxes(exponentformat='power', showexponent='all')
+'''
+
+
+def _user_wants_log_scale(text: str) -> bool:
+    """检测用户输入是否要求对数轴。"""
+    lower = text.lower()
+    return any(kw in lower for kw in _LOG_KEYWORDS)
+
+
+def _inject_log_scale(code: str) -> str:
+    """在代码末尾注入规范对数轴配置。"""
+    return code.rstrip() + '\n' + _LOG_INJECTION + '\n'
+
+
 # ── 沙箱执行 ───────────────────────────────────────────────────
 
 def execute_code(code: str, file_paths: dict = None, networks: dict = None, timeout_sec: int = 15) -> dict:
@@ -531,6 +565,10 @@ def generate_code(user_text: str, file_path: str = None, networks: dict = None) 
         # 无条件删除危险调用（fig.show/write_html/write_image/plt.show）
         for pattern, replacement in _DANGEROUS_PATTERNS:
             code = _re.sub(pattern, replacement, code, flags=_re.MULTILINE)
+
+        # 用户指定 log scale → 强制注入规范对数轴
+        if _user_wants_log_scale(user_text):
+            code = _inject_log_scale(code)
 
         last_code = code  # 同步清理后的代码
 
