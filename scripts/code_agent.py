@@ -127,17 +127,15 @@ from plotly.subplots import make_subplots
   所有 X 轴必须用 `freq_ghz = ntwk.f / 1e9`，然后 `x=freq_ghz`。
   同时设 `xaxis_title='Frequency (GHz)'`。
 - **S/Z/Y 参数是 3D 数组**：必须用 `[:, m, n]` 索引，不是 `[m, n]`！
-- **频率轴必须用对数坐标**（Smith 图除外），按此规则：
+- **默认用线性频率轴**，仅当用户明确要求"对数轴"/"log"时才用 `type='log'`，按此规则：
   ```python
   fig.update_xaxes(
       type='log',
-      tickformat='.0e',
       dtick=1,
-      showgrid=True, gridcolor='#c0c0c0',
-      minor=dict(showgrid=True, gridcolor='#e0e0e0', griddash='dash', showticklabels=False),
-      exponentformat='power', showexponent='all',
+      showgrid=True, gridcolor='#2a2a4a', zerolinecolor='#444',
+      minor=dict(showgrid=True, gridcolor='#2a2a4a', griddash='dash', showticklabels=False),
   )
-  fig.update_yaxes(exponentformat='power', showexponent='all')
+  fig.update_yaxes(gridcolor='#2a2a4a', zerolinecolor='#444')
   ```
 
 ### 禁止
@@ -148,28 +146,31 @@ from plotly.subplots import make_subplots
 - **不要直接用 ntwk.f 作为 X 轴数据！必须先除以 1e9！**
 - **不要使用 rf.Network() 读取文件！用 _nets 字典！**
 
-### 画图风格规范（必须严格遵循，与内置画图保持一致）
+### 画图风格规范（必须严格遵循，与内置按钮图表完全一致）
 ```python
-# 颜色（按此顺序循环使用）
-COLORS = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728',
-          '#9467bd', '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
-
 fig = go.Figure()
 fig.add_trace(go.Scatter(
     x=freq_ghz, y=db, mode='lines', name='S11 (filter)',
-    line=dict(color=COLORS[0], width=1.8),
-    hovertemplate='%{customdata}',
-    customdata=[f'Freq: {f:.4f} GHz<br>dB: {v:.3f}' for f, v in zip(freq_ghz, db)],
+    hovertemplate='<b>S11 (filter)</b><br>%{x:.4f} GHz<br>%{y:.3f} dB<extra></extra>',
 ))
 
 fig.update_layout(
-    template='plotly_white',
-    width=1000, height=550,
+    # 暗色主题（与按钮图表一致，不要用 plotly_white）
+    paper_bgcolor='#1a1a2e',
+    plot_bgcolor='#16213e',
+    font=dict(color='#c0c0c0'),
+    # 不要设 width/height，让图表响应式撑满容器
     hovermode='closest',
-    legend=dict(orientation='h', yanchor='top', y=-0.15, xanchor='center', x=0.5),
-    title=dict(text='S-Parameter Magnitude', x=0.5, font=dict(size=18)),
-    xaxis_title='Frequency (GHz)',
-    yaxis_title='Magnitude (dB)',
+    margin=dict(l=60, r=30, t=60, b=50),
+    title=dict(text='S-Parameter Magnitude', font=dict(color='#e0e0e0')),
+    xaxis=dict(
+        title='Frequency (GHz)',
+        gridcolor='#2a2a4a', zerolinecolor='#444',
+    ),
+    yaxis=dict(
+        title='Magnitude (dB)',
+        gridcolor='#2a2a4a', zerolinecolor='#444',
+    ),
 )
 ```
 
@@ -306,13 +307,11 @@ _LOG_INJECTION = '''
 # [injected] log scale format
 fig.update_xaxes(
     type='log',
-    tickformat='.0e',
     dtick=1,
-    showgrid=True, gridcolor='#c0c0c0',
-    minor=dict(showgrid=True, gridcolor='#e0e0e0', griddash='dash', showticklabels=False),
-    exponentformat='power', showexponent='all',
+    showgrid=True, gridcolor='#2a2a4a', zerolinecolor='#444',
+    minor=dict(showgrid=True, gridcolor='#2a2a4a', griddash='dash', showticklabels=False),
 )
-fig.update_yaxes(exponentformat='power', showexponent='all')
+fig.update_yaxes(gridcolor='#2a2a4a', zerolinecolor='#444')
 '''
 
 
