@@ -228,6 +228,9 @@ def _parse_segment(seg: str, available_files: List[str] = None) -> Optional[SPar
 
 
 def _detect_action(text: str) -> str:
+    # 链式语法检测（→ / ->  / >>）
+    if any(sep in text for sep in ["→", "->", ">>"]):
+        return "cascade"
     if any(w in text for w in BATCH_WORDS):
         return "load_batch"
     if any(w in text for w in LOAD_WORDS):
@@ -260,16 +263,18 @@ def _detect_chain(text: str) -> Optional[List[str]]:
     for sep in ["→", "->", ">>"]:
         if sep in text:
             parts = [p.strip() for p in text.split(sep)]
-            # 过滤空段和明显不是网络名的段
             names = []
             for p in parts:
-                # 提取可能的网络名（单词或文件名）
                 p = p.strip()
                 # 移除末尾的扩展名
                 p = re.sub(r"\.s\dp$", "", p, flags=re.IGNORECASE)
-                # 过滤包含中文标点的纯描述性文本
-                if p and not re.search(r"[，。；！？、]", p) and len(p) < 50:
-                    # 可能是一个网络名
+                # 取第一个词（网络名通常是连续的字母/数字/下划线）
+                # 过滤掉纯中文描述部分
+                word_match = re.match(r"([A-Za-z0-9_]+)", p)
+                if word_match:
+                    names.append(word_match.group(1))
+                elif p and not re.search(r"[，。；！？、\s]", p[:3]) and len(p) < 30:
+                    # 没有空格/标点的短文本，可能是中文名或数字名
                     names.append(p)
             if len(names) >= 2:
                 return names
@@ -387,6 +392,15 @@ if __name__ == "__main__":
         "导出 S21 为 CSV",
         "画 S11 VSWR ，1到6G",
         "加载 amp.s2p，画 S21 群时延",
+        # 新增：链式级联
+        "LNA → BPF → AMP 级联，画 S21 dB",
+        "LNA -> BPF -> AMP 然后画 S21 smith",
+        # 新增：批量加载
+        "批量加载 data/*.s2p",
+        "加载所有 data/ 下的文件",
+        # 新增：多文件对比
+        "对比 LNA 和 BPF 的 S21",
+        "画 LNA BPF AMP 的 S21 比较图",
     ]
     for t in tests:
         print(f"\n输入: {t}")
