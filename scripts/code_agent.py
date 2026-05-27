@@ -277,17 +277,17 @@ _LOG_KEYWORDS = [
     "set_xscale", "type='log'", 'type="log"',
 ]
 
-_LOG_INJECTION = '''
-# [injected] log scale format
-fig.update_xaxes(
-    type='log',
-    tickformat='.0e',
-    dtick=1,
-    showgrid=True, gridcolor='#c0c0c0',
-    minor=dict(showgrid=True, gridcolor='#e0e0e0', griddash='dash', showticklabels=False),
-    exponentformat='power', showexponent='all',
+_LOG_CONFIG = (
+    "type='log', tickformat='.0e', dtick=1, "
+    "showgrid=True, gridcolor='#c0c0c0', "
+    "minor=dict(showgrid=True, gridcolor='#e0e0e0', griddash='dash', showticklabels=False), "
+    "exponentformat='power', showexponent='all'"
 )
-fig.update_yaxes(exponentformat='power', showexponent='all')
+
+_LOG_INJECTION = f'''
+# [injected] log scale format (x + y)
+fig.update_xaxes({_LOG_CONFIG})
+fig.update_yaxes({_LOG_CONFIG})
 '''
 
 
