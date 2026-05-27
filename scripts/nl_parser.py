@@ -208,7 +208,6 @@ def _parse_segment(seg: str, available_files: List[str] = None) -> Optional[SPar
             op.export_format = "html"
         else:
             op.export_format = "csv"  # 默认 CSV
-        op.export_format = "html"
 
     # ── 提取标题 ──
     title_match = re.search(r"标题[:：]\s*(.+?)(?:[，,;；\n]|$)", seg)

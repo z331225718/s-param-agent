@@ -8,6 +8,7 @@ S-Parameter 核心工具库
 import io
 import os
 import base64
+import tempfile
 from typing import Optional, Union, List, Tuple
 
 import numpy as np
@@ -57,6 +58,26 @@ def save_touchstone(ntwk: rf.Network, path: str, fmt: str = "db") -> str:
         path: 输出路径
         fmt: 'db', 'ma' (magnitude/angle), 'ri' (real/imaginary)
     """
+    if hasattr(path, "write"):
+        suffix = f".s{ntwk.nports}p"
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+        tmp_path = tmp.name
+        tmp.close()
+        try:
+            ntwk.write_touchstone(tmp_path, form=fmt)
+            output_path = tmp_path if os.path.exists(tmp_path) else tmp_path + suffix
+            with open(output_path, "rb") as f:
+                data = f.read()
+            try:
+                path.write(data)
+            except TypeError:
+                path.write(data.decode("utf-8"))
+        finally:
+            for candidate in (tmp_path, tmp_path + suffix):
+                if os.path.exists(candidate):
+                    os.unlink(candidate)
+        return path
+
     ntwk.write_touchstone(path, form=fmt)
     return path
 
@@ -91,6 +112,16 @@ def save_csv(
 
     rows = np.column_stack(data)
     header = ",".join(columns)
+    if hasattr(path, "write"):
+        buf = io.StringIO()
+        np.savetxt(buf, rows, delimiter=",", header=header, comments="", fmt="%.6f")
+        text = buf.getvalue()
+        try:
+            path.write(text)
+        except TypeError:
+            path.write(text.encode("utf-8"))
+        return path
+
     np.savetxt(path, rows, delimiter=",", header=header, comments="", fmt="%.6f")
     return path
 
@@ -529,7 +560,7 @@ def plot_s_db(
                 gridcolor="#f0f0f0",
                 gridwidth=0.3,
                 tickmode="auto",
-                tickcount=9,
+                nticks=9,
             ),
         ),
         yaxis=dict(
@@ -615,7 +646,7 @@ def plot_s_db_dual(
     )
     fig.update_xaxes(title_text="Frequency (GHz)", type="log", tickformat=".0e", dtick=1,
                      showgrid=True, gridcolor="#c0c0c0",
-                     minor=dict(showgrid=True, gridcolor="#e0e0e0", griddash="dash", showticklabels=False))
+                     minor=dict(showgrid=True, gridcolor="#e0e0e0", griddash="dash"))
     fig.update_yaxes(title_text="Magnitude (dB) — 左轴", secondary_y=False,
                      showgrid=True, gridcolor="#dde", zerolinecolor="#445")
     fig.update_yaxes(title_text="Magnitude (dB) — 右轴", secondary_y=True,
@@ -666,7 +697,7 @@ def plot_s_deg(
         template="plotly_white",
         legend=dict(orientation="h", yanchor="top", y=-0.15, xanchor="center", x=0.5),
         xaxis=dict(type="log", tickformat=".0e", dtick=1, showgrid=True, gridcolor="#c0c0c0",
-                   minor=dict(showgrid=True, gridcolor="#e0e0e0", griddash="dash", showticklabels=False)),
+                   minor=dict(showgrid=True, gridcolor="#e0e0e0", griddash="dash")),
         yaxis=dict(showgrid=True, gridcolor="#e0e0e0", gridwidth=0.5, zeroline=True, zerolinecolor="#999", zerolinewidth=1),
     )
 
@@ -817,7 +848,7 @@ def plot_vswr(
         template="plotly_white",
         legend=dict(orientation="h", yanchor="top", y=-0.15, xanchor="center", x=0.5),
         xaxis=dict(type="log", tickformat=".0e", dtick=1, showgrid=True, gridcolor="#c0c0c0",
-                   minor=dict(showgrid=True, gridcolor="#e0e0e0", griddash="dash", showticklabels=False)),
+                   minor=dict(showgrid=True, gridcolor="#e0e0e0", griddash="dash")),
         yaxis=dict(showgrid=True, gridcolor="#e0e0e0", gridwidth=0.5),
     )
 
@@ -866,7 +897,7 @@ def plot_group_delay(
         template="plotly_white",
         legend=dict(orientation="h", yanchor="top", y=-0.15, xanchor="center", x=0.5),
         xaxis=dict(type="log", tickformat=".0e", dtick=1, showgrid=True, gridcolor="#c0c0c0",
-                   minor=dict(showgrid=True, gridcolor="#e0e0e0", griddash="dash", showticklabels=False)),
+                   minor=dict(showgrid=True, gridcolor="#e0e0e0", griddash="dash")),
         yaxis=dict(showgrid=True, gridcolor="#e0e0e0", gridwidth=0.5, zeroline=True, zerolinecolor="#999", zerolinewidth=1),
     )
 
@@ -983,7 +1014,7 @@ def plot_multi_db(
         template="plotly_white",
         legend=dict(orientation="h", yanchor="top", y=-0.22, xanchor="center", x=0.5),
         xaxis=dict(type="log", tickformat=".0e", dtick=1, showgrid=True, gridcolor="#c0c0c0",
-                   minor=dict(showgrid=True, gridcolor="#e0e0e0", griddash="dash", showticklabels=False)),
+                   minor=dict(showgrid=True, gridcolor="#e0e0e0", griddash="dash")),
         yaxis=dict(showgrid=True, gridcolor="#e0e0e0", gridwidth=0.5, zeroline=True, zerolinecolor="#999", zerolinewidth=1),
     )
 
@@ -1160,7 +1191,7 @@ def plot_compare(
         fig.update_xaxes(title_text="Frequency (GHz)", row=row, col=1,
                          type="log", tickformat=".0e", dtick=1,
                          showgrid=True, gridcolor="#c0c0c0",
-                         minor=dict(showgrid=True, gridcolor="#e0e0e0", griddash="dash", showticklabels=False))
+                         minor=dict(showgrid=True, gridcolor="#e0e0e0", griddash="dash"))
     fig.update_yaxes(title_text="S-Parameter (dB)",
                      showgrid=True, gridcolor="#e0e0e0", gridwidth=0.5,
                      zeroline=True, zerolinecolor="#999", zerolinewidth=1)

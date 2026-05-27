@@ -1059,9 +1059,10 @@ def generate_chart_html():
 
     # 先拿到 JSON
     resp = generate_chart()
-    if resp[1] != 200:
+    response, status = _normalize_view_response(resp)
+    if status != 200:
         return resp
-    fig_json = resp[0].get_json()
+    fig_json = response.get_json()
 
     html = f"""<!DOCTYPE html>
 <html lang="zh-CN">
@@ -1093,9 +1094,10 @@ def export_html():
     """下载独立 HTML 报告"""
     data = request.get_json()
     resp = generate_chart_html()
-    if resp[1] != 200:
+    response, status = _normalize_view_response(resp)
+    if status != 200:
         return resp
-    html = resp[0].get_json()["html"]
+    html = response.get_json()["html"]
 
     bio = io.BytesIO()
     bio.write(html.encode("utf-8"))
@@ -1426,6 +1428,15 @@ def _get_network(session_id, name):
                 if result is not None:
                     return result
     return None
+
+
+def _normalize_view_response(resp):
+    """Return (response, status_code) for direct or tuple Flask view returns."""
+    if isinstance(resp, tuple):
+        response = resp[0]
+        status = resp[1] if len(resp) > 1 else response.status_code
+        return response, status
+    return resp, resp.status_code
 
 
 def _read_touchstone_header(path: str) -> dict:

@@ -76,7 +76,8 @@ ALLOWED_PREFIXES = [
 
 FORBIDDEN_BUILTINS = {
     "eval", "exec", "compile", "__import__", "open",
-    "breakpoint", "input",
+    "breakpoint", "input", "getattr", "setattr", "delattr",
+    "globals", "locals", "vars",
 }
 
 # 无条件物理删除的危险调用（在 AST 校验前用正则移除）
@@ -133,7 +134,7 @@ from plotly.subplots import make_subplots
       type='log',
       dtick=1,
       showgrid=True, gridcolor='#2a2a4a', zerolinecolor='#444',
-      minor=dict(showgrid=True, gridcolor='#2a2a4a', griddash='dash', showticklabels=False),
+      minor=dict(showgrid=True, gridcolor='#2a2a4a', griddash='dash'),
   )
   fig.update_yaxes(gridcolor='#2a2a4a', zerolinecolor='#444')
   ```
@@ -309,7 +310,7 @@ fig.update_xaxes(
     type='log',
     dtick=1,
     showgrid=True, gridcolor='#2a2a4a', zerolinecolor='#444',
-    minor=dict(showgrid=True, gridcolor='#2a2a4a', griddash='dash', showticklabels=False),
+    minor=dict(showgrid=True, gridcolor='#2a2a4a', griddash='dash'),
 )
 fig.update_yaxes(gridcolor='#2a2a4a', zerolinecolor='#444')
 '''
@@ -372,7 +373,7 @@ for _name, _info in _networks_config.items():
     _file_path_json = json.dumps(file_paths.get("file_path", "") if file_paths else "")
     _out_path_json = json.dumps(tempfile.mktemp(suffix=".json"))
 
-    wrapper = '''import sys, io, json, traceback, os
+    wrapper = '''import sys, io, json, traceback
 {nets_init}
 # 注入文件路径（兼容旧代码）
 file_path = {file_path_json}
