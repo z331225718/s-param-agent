@@ -237,7 +237,7 @@ def build_lessons_prompt(max_items: int = 15) -> str:
         wp = l.get("wrong_pattern", "")
         ci = l.get("correct_info", "")
         cnt = l.get("count", 1)
-        tag = " (x" + str(cnt) + ")" if cnt > 1 else ""
+        tag = " (\u00d7" + str(cnt) + ")" if cnt > 1 else ""
         if ci:
             lines.append("- ❌ `" + wp + "`" + tag + " → " + ci[:120])
         else:

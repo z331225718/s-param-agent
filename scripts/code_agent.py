@@ -331,28 +331,27 @@ def execute_code(code: str, file_paths: dict = None, networks: dict = None, time
     # 构建网络预加载代码
     nets_init = ""
     if networks:
-        nets_init = (
-            "# ── 预加载网络对象到 _nets ──\n"
-            "import skrf as rf\n"
-            "_nets = {}\n"
-            "_networks_config = {}\n".format(json.dumps(networks)) +
-            "for _name, _info in _networks_config.items():\n"
-            "    try:\n"
-            "        _nets[_name] = rf.Network(_info['path'])\n"
-            "    except Exception:\n"
-            "        pass\n"
-        )
+        nets_init = f'''
+# ── 预加载网络对象到 _nets ──
+import skrf as rf
+_nets = {{}}
+_networks_config = {json.dumps(networks)}
+for _name, _info in _networks_config.items():
+    try:
+        _nets[_name] = rf.Network(_info["path"])
+    except Exception:
+        pass  # 跳过损坏的文件
+'''
 
-    # 构建完整的可执行脚本（.format() 传参，避免 f-string 吃掉代码中的 {}）
+    # 构建完整的可执行脚本（.format() 命名参数，避免 f-string 吃掉代码中的 {}）
     _user_code = _indent(code, "    ")
-    _fp_json = json.dumps(file_paths.get("file_path", "") if file_paths else "")
-    _out_json = json.dumps(tempfile.mktemp(suffix=".json"))
+    _file_path_json = json.dumps(file_paths.get("file_path", "") if file_paths else "")
+    _out_path_json = json.dumps(tempfile.mktemp(suffix=".json"))
 
     wrapper = '''import sys, io, json, traceback, os
-{0}
-
+{nets_init}
 # 注入文件路径（兼容旧代码）
-file_path = {1}
+file_path = {file_path_json}
 
 # 捕获输出
 stdout_buf = io.StringIO()
@@ -365,8 +364,7 @@ sys.stderr = stderr_buf
 result = {{"ok": False, "figure_json": None, "stdout": "", "stderr": "", "error": None}}
 
 try:
-{2}
-
+{user_code}
     fig = locals().get("fig")
     if fig is not None and hasattr(fig, "to_json"):
         result["figure_json"] = json.loads(fig.to_json())
@@ -379,11 +377,12 @@ finally:
     result["stdout"] = stdout_buf.getvalue()
     result["stderr"] = stderr_buf.getvalue()
 
-out_path = {3}
+out_path = {out_path_json}
 with open(out_path, "w") as f:
     json.dump(result, f)
 print("__RESULT_FILE__:" + out_path)
-'''.format(nets_init, _fp_json, _user_code, _out_json)
+'''.format(nets_init=nets_init, file_path_json=_file_path_json,
+           user_code=_user_code, out_path_json=_out_path_json)
 
     try:
         proc = subprocess.run(
@@ -554,9 +553,7 @@ def generate_code(user_text: str, file_path: str = None, networks: dict = None) 
             with urllib.request.urlopen(req, timeout=60) as resp:
                 result = json.loads(resp.read().decode("utf-8"))
         except Exception as e:
-            return {"error": f"LLM 调用失败: {e}", "code": "", "validated": False,
-                    "validation_msg": str(e), "retries": attempt - 1, "history": history,
-                    "exec_result": {"ok": False, "error": str(e)}}
+            return {"error": f"LLM 调用失败: {e}", "retries": attempt - 1, "history": history}
 
         llm_response = result["choices"][0]["message"]["content"]
         code = extract_code(llm_response)
