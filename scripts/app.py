@@ -1429,6 +1429,11 @@ def _get_network(session_id, name):
     return None
 
 
+def _parse_float(s: str) -> float:
+    """解析浮点数，兼容 Fortran D 指数记法 (1.0D+09)。"""
+    return float(s.replace("D", "E").replace("d", "e"))
+
+
 def _read_touchstone_header(path: str) -> dict:
     """
     快速读取 Touchstone 文件头，不解析完整 S 矩阵。
@@ -1436,13 +1441,14 @@ def _read_touchstone_header(path: str) -> dict:
     自动跳过任意长度的注释头（仿真软件可能导出上百行 ! 注释）。
     """
     import re as _re
-    data_re = _re.compile(r"^\s*-?\d")
+    data_re = _re.compile(r"^\s*[-+]?\d")
 
     # ── 第一遍：扫描找到 # 行和第一个数据行 ──
     freq_unit = "ghz"
     nports = 0
     f_min = None
     first_data_line = None
+    past_option_line = False
 
     with open(path, "r", encoding="utf-8", errors="ignore") as f:
         for line in f:
@@ -1452,6 +1458,7 @@ def _read_touchstone_header(path: str) -> dict:
                 continue
             # # 行：频率单位等元数据
             if stripped.startswith("#"):
+                past_option_line = True
                 parts = stripped.split()
                 freq_str = parts[1].lower() if len(parts) > 1 else "ghz"
                 if "ghz" in freq_str: freq_unit = "ghz"
@@ -1459,8 +1466,8 @@ def _read_touchstone_header(path: str) -> dict:
                 elif "khz" in freq_str: freq_unit = "khz"
                 elif "hz" in freq_str: freq_unit = "hz"
                 continue
-            # 数据行
-            if data_re.match(stripped):
+            # 数据行（必须在 # 行之后）
+            if past_option_line and data_re.match(stripped):
                 first_data_line = stripped
                 break
 
@@ -1484,7 +1491,7 @@ def _read_touchstone_header(path: str) -> dict:
     # ── 频率范围 ──
     freq_mul = {"ghz": 1e9, "mhz": 1e6, "khz": 1e3, "hz": 1.0}.get(freq_unit, 1e9)
     try:
-        f_min = float(cols[0]) * freq_mul
+        f_min = _parse_float(cols[0]) * freq_mul
     except Exception:
         f_min = 0.0
 
@@ -1496,7 +1503,7 @@ def _read_touchstone_header(path: str) -> dict:
             if data_re.match(line):
                 npoints += 1
                 try:
-                    last_freq = float(line.split()[0])
+                    last_freq = _parse_float(line.split()[0])
                 except Exception:
                     pass
 
