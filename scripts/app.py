@@ -646,37 +646,44 @@ def upload():
         tmp_path = tmp.name
 
     try:
-        ntwk = rf.Network(tmp_path)
         name = Path(file.filename).stem
         session_id = request.form.get("session", "default")
 
+        # ── 快速解析文件头（不加载完整 S 矩阵）──
+        header = _read_touchstone_header(tmp_path)
+        if header is None:
+            os.unlink(tmp_path)
+            return jsonify({"error": "无法解析 Touchstone 文件头"}), 400
+
         if session_id not in sessions:
             sessions[session_id] = {"networks": {}}
-        all_params = sp.list_params(ntwk)
+
+        nports = header["nports"]
+        all_params = [f"S{m+1}{n+1}" for m in range(nports) for n in range(nports)]
+
         sessions[session_id]["networks"][name] = {
             "path": tmp_path,
-            "_ntwk": ntwk,
-            "nports": ntwk.nports,
-            "f_min": float(ntwk.f[0]),
-            "f_max": float(ntwk.f[-1]),
-            "npoints": len(ntwk.f),
+            "_ntwk": None,  # 延迟加载
+            "nports": nports,
+            "f_min": header["f_min"],
+            "f_max": header["f_max"],
+            "npoints": header["npoints"],
             "params": all_params,
         }
 
-        freq_unit = _guess_freq_unit(ntwk)
+        freq_unit = header["freq_unit"]
         sessions[session_id]["freq_unit"] = freq_unit
 
-        # 大端口文件参数列表截断（前端展示用，完整列表在 session 中）
         display_params = all_params if len(all_params) <= 200 else all_params[:200]
 
         return jsonify({
             "ok": True,
             "name": name,
-            "nports": ntwk.nports,
-            "f_min": float(ntwk.f[0]),
-            "f_max": float(ntwk.f[-1]),
+            "nports": nports,
+            "f_min": header["f_min"],
+            "f_max": header["f_max"],
             "f_unit": freq_unit,
-            "npoints": len(ntwk.f),
+            "npoints": header["npoints"],
             "params": display_params,
             "params_truncated": len(all_params) > 200,
             "total_params": len(all_params),
@@ -710,24 +717,31 @@ def upload_batch():
             file.save(tmp.name)
             tmp_path = tmp.name
         try:
-            ntwk = rf.Network(tmp_path)
+            header = _read_touchstone_header(tmp_path)
+            if header is None:
+                os.unlink(tmp_path)
+                results.append({"ok": False, "name": file.filename, "error": "无法解析文件头"})
+                continue
             name = Path(file.filename).stem
+            nports = header["nports"]
+            all_params = [f"S{m+1}{n+1}" for m in range(nports) for n in range(nports)]
             sessions[session_id]["networks"][name] = {
                 "path": tmp_path,
-                "nports": ntwk.nports,
-                "f_min": float(ntwk.f[0]),
-                "f_max": float(ntwk.f[-1]),
-                "npoints": len(ntwk.f),
-                "params": sp.list_params(ntwk),
+                "_ntwk": None,
+                "nports": nports,
+                "f_min": header["f_min"],
+                "f_max": header["f_max"],
+                "npoints": header["npoints"],
+                "params": all_params,
             }
             results.append({
                 "ok": True,
                 "name": name,
-                "nports": ntwk.nports,
-                "f_min": float(ntwk.f[0]),
-                "f_max": float(ntwk.f[-1]),
-                "npoints": len(ntwk.f),
-                "params": sp.list_params(ntwk),
+                "nports": nports,
+                "f_min": header["f_min"],
+                "f_max": header["f_max"],
+                "npoints": header["npoints"],
+                "params": all_params[:200],
             })
         except Exception as e:
             os.unlink(tmp_path)
@@ -768,7 +782,10 @@ def upload_glob():
     results = []
     for path in matches:
         try:
-            ntwk = rf.Network(path)
+            header = _read_touchstone_header(path)
+            if header is None:
+                results.append({"ok": False, "name": os.path.basename(path), "error": "无法解析文件头"})
+                continue
             name = os.path.splitext(os.path.basename(path))[0]
             # 处理重名：添加后缀
             if name in sessions[session_id]["networks"]:
@@ -777,22 +794,25 @@ def upload_glob():
                 while f"{base}_{idx}" in sessions[session_id]["networks"]:
                     idx += 1
                 name = f"{base}_{idx}"
+            nports = header["nports"]
+            all_params = [f"S{m+1}{n+1}" for m in range(nports) for n in range(nports)]
             sessions[session_id]["networks"][name] = {
                 "path": path,
-                "nports": ntwk.nports,
-                "f_min": float(ntwk.f[0]),
-                "f_max": float(ntwk.f[-1]),
-                "npoints": len(ntwk.f),
-                "params": sp.list_params(ntwk),
+                "_ntwk": None,
+                "nports": nports,
+                "f_min": header["f_min"],
+                "f_max": header["f_max"],
+                "npoints": header["npoints"],
+                "params": all_params,
             }
             results.append({
                 "ok": True,
                 "name": name,
-                "nports": ntwk.nports,
-                "f_min": float(ntwk.f[0]),
-                "f_max": float(ntwk.f[-1]),
-                "npoints": len(ntwk.f),
-                "params": sp.list_params(ntwk),
+                "nports": nports,
+                "f_min": header["f_min"],
+                "f_max": header["f_max"],
+                "npoints": header["npoints"],
+                "params": all_params[:200],
             })
         except Exception as e:
             results.append({"ok": False, "name": os.path.basename(path), "error": str(e)})
@@ -1277,6 +1297,96 @@ def _get_network(session_id, name):
                 if result is not None:
                     return result
     return None
+
+
+def _read_touchstone_header(path: str) -> dict:
+    """
+    快速读取 Touchstone 文件头，不解析完整 S 矩阵。
+    适用于大端口文件（.s64p 等），毫秒级返回。
+    """
+    import re as _re
+    with open(path, "r", encoding="utf-8", errors="ignore") as f:
+        lines = []
+        for _ in range(20):
+            line = f.readline()
+            if not line:
+                break
+            lines.append(line.strip())
+
+    # 解析 # 行: # GHz S RI R 50
+    nports = 0
+    freq_unit = "ghz"
+    for line in lines:
+        if line.startswith("#"):
+            parts = line.split()
+            freq_str = parts[1].lower() if len(parts) > 1 else "ghz"
+            if "ghz" in freq_str: freq_unit = "ghz"
+            elif "mhz" in freq_str: freq_unit = "mhz"
+            elif "khz" in freq_str: freq_unit = "khz"
+            elif "hz" in freq_str: freq_unit = "hz"
+            break
+
+    # 找第一个数据行确定端口数
+    data_re = _re.compile(r"^\s*-?\d")
+    for line in lines:
+        if data_re.match(line):
+            cols = line.split()
+            # 第一个是频率，后面是 S 参数值
+            # RI 格式: N²×2 列 | DB/MA 格式: N² 列
+            nvals = len(cols) - 1
+            if nvals > 0:
+                # 尝试两种格式
+                # DB: columns per param = 1 (just dB)
+                # MA: columns per param = 2 (dB + deg)
+                # RI: columns per param = 2 (real + imag)
+                for cols_per_param in [2, 1]:
+                    n2 = nvals // cols_per_param
+                    n = int(n2 ** 0.5)
+                    if n * n == n2 and n > 0:
+                        nports = n
+                        break
+            break
+
+    if nports == 0:
+        return None
+
+    # 估算频率范围：读第一行和最后一行数据
+    f_min = None
+    f_max = None
+    freq_mul = {"ghz": 1e9, "mhz": 1e6, "khz": 1e3, "hz": 1.0}.get(freq_unit, 1e9)
+
+    for line in lines:
+        if data_re.match(line):
+            try:
+                f_min = float(line.split()[0]) * freq_mul
+            except Exception:
+                pass
+            break
+
+    # 统计总行数（快速扫描，大文件跳过行内容）
+    npoints = 0
+    last_freq = None
+    with open(path, "r", encoding="utf-8", errors="ignore") as f:
+        for line in f:
+            if data_re.match(line):
+                npoints += 1
+                try:
+                    last_freq = float(line.split()[0])
+                except Exception:
+                    pass
+
+    if last_freq is not None:
+        f_max = last_freq * freq_mul
+    else:
+        f_max = f_min  # fallback
+
+    return {
+        "nports": nports,
+        "f_min": float(f_min) if f_min else 0.0,
+        "f_max": float(f_max) if f_max else 0.0,
+        "npoints": npoints,
+        "freq_unit": freq_unit,
+    }
 
 
 def _guess_freq_unit(ntwk):
