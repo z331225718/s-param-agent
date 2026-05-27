@@ -127,12 +127,18 @@ from plotly.subplots import make_subplots
   所有 X 轴必须用 `freq_ghz = ntwk.f / 1e9`，然后 `x=freq_ghz`。
   同时设 `xaxis_title='Frequency (GHz)'`。
 - **S/Z/Y 参数是 3D 数组**：必须用 `[:, m, n]` 索引，不是 `[m, n]`！
-- **禁止 Plotly 自动 SI 前缀**：每张图必须加这两行，强制科学计数法：
+- **对数频率轴必须按以下规则设置**（每张图都必须加）：
   ```python
-  fig.update_xaxes(exponentformat='power', showexponent='all')
+  fig.update_xaxes(
+      type='log',
+      tickformat='.0e',
+      dtick=1,
+      showgrid=True, gridcolor='#c0c0c0',
+      minor=dict(showgrid=True, gridcolor='#e0e0e0', griddash='dash', showticklabels=False),
+      exponentformat='power', showexponent='all',
+  )
   fig.update_yaxes(exponentformat='power', showexponent='all')
   ```
-  否则会出现 μ (micro)、k (kilo)、B (billion) 等丑陋标签！
 
 ### 禁止
 - 不要 import os, sys, subprocess, requests, urllib, shutil
