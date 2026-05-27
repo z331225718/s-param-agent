@@ -550,8 +550,13 @@ class SParamGUI:
         self.status(title)
 
     def _clear_chart(self):
-        self.fig.clear()
-        self.ax = self.fig.add_subplot(111)
+        # 清除数据但保留轴框架
+        for artist in list(self.ax.lines) + list(self.ax.collections) + list(self.ax.texts):
+            artist.remove()
+        if self.ax.get_legend():
+            self.ax.get_legend().remove()
+        self.ax.relim()
+        self.ax.autoscale()
 
     def _draw_chart(self, title=""):
         if title:
