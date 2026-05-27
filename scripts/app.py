@@ -755,6 +755,62 @@ def upload_batch():
     })
 
 
+@app.route("/api/load-local", methods=["POST"])
+def load_local():
+    """
+    直接从本地路径加载文件（跳过上传，适合大文件）。
+    接收 JSON: { "path": "/data/big.s64p", "session": "default" }
+    """
+    data = request.get_json()
+    local_path = data.get("path", "").strip()
+    session_id = data.get("session", "default")
+
+    if not local_path:
+        return jsonify({"error": "请提供本地文件路径"}), 400
+    if not os.path.exists(local_path):
+        return jsonify({"error": f"文件不存在: {local_path}"}), 404
+
+    try:
+        header = _read_touchstone_header(local_path)
+        if header is None:
+            return jsonify({"error": "无法解析 Touchstone 文件头"}), 400
+
+        name = data.get("name") or os.path.splitext(os.path.basename(local_path))[0]
+        if session_id not in sessions:
+            sessions[session_id] = {"networks": {}}
+
+        nports = header["nports"]
+        all_params = [f"S{m+1}{n+1}" for m in range(nports) for n in range(nports)]
+
+        sessions[session_id]["networks"][name] = {
+            "path": local_path,
+            "_ntwk": None,
+            "nports": nports,
+            "f_min": header["f_min"],
+            "f_max": header["f_max"],
+            "npoints": header["npoints"],
+            "params": all_params,
+        }
+
+        display_params = all_params if len(all_params) <= 200 else all_params[:200]
+
+        return jsonify({
+            "ok": True,
+            "name": name,
+            "nports": nports,
+            "f_min": header["f_min"],
+            "f_max": header["f_max"],
+            "f_unit": header["freq_unit"],
+            "npoints": header["npoints"],
+            "params": display_params,
+            "params_truncated": len(all_params) > 200,
+            "total_params": len(all_params),
+        })
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/upload/glob", methods=["POST"])
 def upload_glob():
     """通过通配符模式批量加载本地文件。
@@ -847,12 +903,42 @@ def list_networks():
 
 @app.route("/api/networks/<name>/load", methods=["POST"])
 def load_network(name):
-    """触发网络延迟加载，返回加载状态。"""
+    """触发网络延迟加载（后台线程，立即返回）。"""
     session_id = request.args.get("session", "default")
-    ntwk = _get_network(session_id, name)
-    if ntwk is None:
+    if session_id not in sessions:
+        return jsonify({"ok": False, "error": "会话不存在"}), 404
+    nets = sessions[session_id].get("networks", {})
+    if name not in nets:
         return jsonify({"ok": False, "error": f"找不到网络 '{name}'"}), 404
-    return jsonify({"ok": True, "name": name, "nports": ntwk.nports, "npoints": len(ntwk.f)})
+
+    entry = nets[name]
+    # 已加载 → 直接返回
+    if entry.get("_ntwk") is not None:
+        return jsonify({"ok": True, "name": name, "status": "loaded",
+                        "nports": entry["_ntwk"].nports, "npoints": len(entry["_ntwk"].f)})
+
+    # 正在加载 → 返回 loading 状态
+    if entry.get("_loading"):
+        return jsonify({"ok": True, "name": name, "status": "loading"})
+
+    # 启动后台线程加载
+    entry["_loading"] = True
+    import threading
+    def _load_worker():
+        try:
+            path = entry["path"]
+            if os.path.exists(path):
+                ntwk = rf.Network(path)
+                entry["_ntwk"] = ntwk
+        except Exception as e:
+            entry["_load_error"] = str(e)
+        finally:
+            entry["_loading"] = False
+
+    t = threading.Thread(target=_load_worker, daemon=True)
+    t.start()
+
+    return jsonify({"ok": True, "name": name, "status": "loading"})
 
 
 @app.route("/api/networks/<name>/status", methods=["GET"])
@@ -866,7 +952,9 @@ def network_status(name):
         return jsonify({"loaded": False, "error": "网络不存在"})
     entry = nets[name]
     return jsonify({
-        "loaded": "_ntwk" in entry and entry["_ntwk"] is not None,
+        "loaded": entry.get("_ntwk") is not None,
+        "loading": entry.get("_loading", False),
+        "error": entry.get("_load_error", ""),
         "name": name,
         "nports": entry.get("nports", 0),
         "npoints": entry.get("npoints", 0),

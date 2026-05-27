@@ -416,20 +416,19 @@ async function selectFile(name) {
   renderParamTags();
   updateCompareRef();
 
-  // 自动触发延迟加载
+  // 自动触发延迟加载（后台线程，轮询状态）
   const net = state.networks[name];
-  if (net && !net.loaded && net.nports > 8) {
-    toast(`⏳ 正在加载 ${name} 的 S 矩阵 (${net.nports}端口, ${net.npoints}点)...`);
+  if (net && !net.loaded && !net._loading && net.nports > 8) {
+    net._loading = true;
+    toast(`⏳ 正在后台加载 ${name} 的 S 矩阵 (${net.nports}端口, ${net.npoints}点)...`);
     try {
-      const res = await fetch(`/api/networks/${encodeURIComponent(name)}/load?session=default`, { method: 'POST' });
-      const data = await res.json();
-      if (data.ok) {
-        net.loaded = true;
-        renderFileList();
-        toast(`✅ ${name} 已载入内存 (${data.nports}端口, ${data.npoints}点)`);
-      }
+      // 触发加载
+      await fetch(`/api/networks/${encodeURIComponent(name)}/load?session=default`, { method: 'POST' });
+      // 轮询直到完成
+      await pollLoadStatus(name);
     } catch (e) {
       toast(`⚠️ ${name} 加载失败: ${e.message}`, 'error');
+      net._loading = false;
     }
   }
 }
@@ -629,6 +628,34 @@ document.addEventListener('click', function(e) {
   }
 });
 
+// ── 轮询加载状态 ──
+async function pollLoadStatus(name, timeoutSec = 120) {
+  const net = state.networks[name];
+  if (!net) return;
+  const start = Date.now();
+  while (Date.now() - start < timeoutSec * 1000) {
+    try {
+      const res = await fetch(`/api/networks/${encodeURIComponent(name)}/status?session=default`);
+      const data = await res.json();
+      if (data.loaded) {
+        net.loaded = true;
+        net._loading = false;
+        renderFileList();
+        toast(`✅ ${name} 已载入内存`);
+        return;
+      }
+      if (data.error) {
+        net._loading = false;
+        toast(`⚠️ ${name}: ${data.error}`, 'error');
+        return;
+      }
+    } catch (e) { /* retry */ }
+    await new Promise(r => setTimeout(r, 2000)); // 每 2 秒轮询
+  }
+  net._loading = false;
+  toast(`⚠️ ${name} 加载超时`, 'error');
+}
+
 // ── 生成图表 ──
 async function generateChart() {
   if (!state.selectedFile) { toast('请先选择文件', 'error'); return; }
@@ -637,18 +664,11 @@ async function generateChart() {
   // 确保网络已加载
   const net = state.networks[state.selectedFile];
   if (net && !net.loaded) {
-    toast(`⏳ 正在加载 ${state.selectedFile} 的 S 矩阵...`);
+    toast(`⏳ 正在后台加载 ${state.selectedFile}...`);
     try {
-      const res = await fetch(`/api/networks/${encodeURIComponent(state.selectedFile)}/load?session=default`, { method: 'POST' });
-      const data = await res.json();
-      if (data.ok) {
-        net.loaded = true;
-        renderFileList();
-        toast(`✅ 已载入，正在生成图表...`);
-      } else {
-        toast(`加载失败: ${data.error}`, 'error');
-        return;
-      }
+      await fetch(`/api/networks/${encodeURIComponent(state.selectedFile)}/load?session=default`, { method: 'POST' });
+      await pollLoadStatus(state.selectedFile);
+      if (!net.loaded) { toast('加载失败', 'error'); return; }
     } catch (e) {
       toast(`加载失败: ${e.message}`, 'error');
       return;
@@ -929,19 +949,18 @@ async function doCompare() {
   const files = state.selectedFiles.length >= 2 ? state.selectedFiles : Object.keys(state.networks).slice(0, 10);
   if (files.length < 2) { toast('请至少选择 2 个网络进行对比', 'error'); return; }
 
-  // 预加载未载入的网络
+  // 预加载未载入的网络（后台线程 + 轮询）
   const unloaded = files.filter(f => state.networks[f] && !state.networks[f].loaded);
   if (unloaded.length > 0) {
-    toast(`⏳ 正在加载 ${unloaded.length} 个网络的 S 矩阵...`);
+    toast(`⏳ 正在后台加载 ${unloaded.length} 个网络的 S 矩阵...`);
     for (const name of unloaded) {
       try {
-        const res = await fetch(`/api/networks/${encodeURIComponent(name)}/load?session=default`, { method: 'POST' });
-        const data = await res.json();
-        if (data.ok) state.networks[name].loaded = true;
+        await fetch(`/api/networks/${encodeURIComponent(name)}/load?session=default`, { method: 'POST' });
       } catch (e) { /* continue */ }
     }
+    // 并行轮询所有
+    await Promise.all(unloaded.map(n => pollLoadStatus(n, 300)));
     renderFileList();
-    toast(`✅ 已载入，正在生成对比图...`);
   }
 
   const params = state.selectedParams.length > 0 ? state.selectedParams : ['S21'];
