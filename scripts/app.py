@@ -24,7 +24,7 @@ import llm_chat
 import code_agent
 
 app = Flask(__name__)
-app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024  # 50 MB 上传上限
+app.config["MAX_CONTENT_LENGTH"] = 500 * 1024 * 1024  # 500 MB 上传上限（支持大端口文件如 .s64p）
 
 # 会话级存储：上传文件的解析结果
 sessions = {}  # { session_id: { "networks": {name: Network}, "freq_unit": "ghz" } }
@@ -643,17 +643,21 @@ def upload():
 
         if session_id not in sessions:
             sessions[session_id] = {"networks": {}}
+        all_params = sp.list_params(ntwk)
         sessions[session_id]["networks"][name] = {
             "path": tmp_path,
             "nports": ntwk.nports,
             "f_min": float(ntwk.f[0]),
             "f_max": float(ntwk.f[-1]),
             "npoints": len(ntwk.f),
-            "params": sp.list_params(ntwk),
+            "params": all_params,
         }
 
         freq_unit = _guess_freq_unit(ntwk)
         sessions[session_id]["freq_unit"] = freq_unit
+
+        # 大端口文件参数列表截断（前端展示用，完整列表在 session 中）
+        display_params = all_params if len(all_params) <= 200 else all_params[:200]
 
         return jsonify({
             "ok": True,
@@ -663,10 +667,13 @@ def upload():
             "f_max": float(ntwk.f[-1]),
             "f_unit": freq_unit,
             "npoints": len(ntwk.f),
-            "params": sp.list_params(ntwk),
+            "params": display_params,
+            "params_truncated": len(all_params) > 200,
+            "total_params": len(all_params),
         })
     except Exception as e:
         os.unlink(tmp_path)
+        traceback.print_exc()
         return jsonify({"error": f"解析失败: {str(e)}"}), 400
 
 
@@ -790,11 +797,19 @@ def upload_glob():
 
 @app.route("/api/networks", methods=["GET"])
 def list_networks():
-    """列出已上传的网络"""
+    """列出已上传的网络（大端口文件参数截断至前200个）"""
     session_id = request.args.get("session", "default")
     if session_id not in sessions:
         return jsonify({"networks": {}})
-    return jsonify({"networks": sessions[session_id]["networks"]})
+    nets = {}
+    for name, info in sessions[session_id]["networks"].items():
+        entry = dict(info)
+        if len(entry.get("params", [])) > 200:
+            entry["params_truncated"] = True
+            entry["total_params"] = len(entry["params"])
+            entry["params"] = entry["params"][:200]
+        nets[name] = entry
+    return jsonify({"networks": nets})
 
 
 @app.route("/api/networks/<name>", methods=["DELETE"])

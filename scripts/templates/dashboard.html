@@ -506,11 +506,39 @@ function renderParamTags() {
     el.innerHTML = '<p style="color:#555;font-size:0.78rem;">请先选择文件</p>';
     return;
   }
-  const params = state.networks[state.selectedFile].params;
-  el.innerHTML = params.map(p => {
+  const net = state.networks[state.selectedFile];
+  const params = net.params || [];
+  const maxShow = 100;
+  const display = params.slice(0, maxShow);
+  let html = display.map(p => {
     const active = state.selectedParams.includes(p) ? ' active' : '';
     return `<span class="param-tag${active}" onclick="toggleParam('${p}')">${p}</span>`;
   }).join('');
+  if (params.length > maxShow || net.params_truncated) {
+    html += `<span style="font-size:0.72rem;color:#777;">… 仅显示前 ${maxShow}/${net.total_params || params.length} 个</span>`;
+  }
+  el.innerHTML = html + `<div style="margin-top:8px;display:flex;gap:6px;">
+    <input type="text" id="paramManual" placeholder="手动输入 S43 或 S21" style="flex:1;background:#12122a;border:1px solid var(--border);color:var(--text);padding:5px 8px;border-radius:4px;font-size:0.78rem;"
+      onkeydown="if(event.key==='Enter')addManualParam()">
+    <button onclick="addManualParam()" style="padding:4px 10px;font-size:0.78rem;">+</button>
+  </div>`;
+}
+
+function addManualParam() {
+  const inp = document.getElementById('paramManual');
+  if (!inp) return;
+  const val = inp.value.trim().toUpperCase();
+  inp.value = '';
+  if (!val) return;
+  // 格式: S12 / VSWR1 / S12,S21
+  const parts = val.split(/[,，\s]+/);
+  for (let p of parts) {
+    p = p.trim();
+    if (!p) continue;
+    if (!state.selectedParams.includes(p)) state.selectedParams.push(p);
+    else state.selectedParams = state.selectedParams.filter(x => x !== p);
+  }
+  renderParamTags();
 }
 
 function toggleParam(p) {
