@@ -218,6 +218,12 @@
       <p>拖拽一个或多个 .sNp 文件到这里 或 点击选择</p>
     </div>
     <input type="file" id="fileInput" accept=".s1p,.s2p,.s3p,.s4p,.s5p,.s6p,.sNp,.ts" multiple hidden>
+    <div style="margin-top:6px;display:flex;gap:4px;">
+      <input type="text" id="localPath" placeholder="或输入本地路径 /data/xxx.sNp"
+             style="flex:1;background:#12122a;border:1px solid var(--border);color:var(--text);padding:6px 8px;border-radius:4px;font-size:0.8rem;"
+             onkeydown="if(event.key==='Enter')loadLocalPath()">
+      <button onclick="loadLocalPath()" style="padding:6px 10px;font-size:0.8rem;">加载</button>
+    </div>
   </div>
 
   <!-- 已加载文件 -->
@@ -295,6 +301,30 @@ fileInput.addEventListener('change', () => {
   for (const f of fileInput.files) uploadFile(f);
   fileInput.value = '';
 });
+
+async function loadLocalPath() {
+  const inp = document.getElementById('localPath');
+  const path = inp.value.trim();
+  if (!path) return;
+  inp.value = '';
+  toast(`⏳ 正在加载本地文件...`);
+  try {
+    const res = await fetch('/api/load-local', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path, session: 'default' }),
+    });
+    const data = await res.json();
+    if (data.error) { toast(data.error, 'error'); return; }
+    state.networks[data.name] = data;
+    state.selectedFile = data.name;
+    renderFileList();
+    renderParamTags();
+    toast(`✅ 已加载: ${data.name} (${data.nports}端口, ${data.npoints}点)`);
+  } catch (err) {
+    toast('加载失败: ' + err.message, 'error');
+  }
+}
 
 async function uploadFile(file) {
   const form = new FormData();
