@@ -660,29 +660,25 @@ def upload():
         name = Path(file.filename).stem
         session_id = request.form.get("session", "default")
 
-        # ── 快速解析文件头（不加载完整 S 矩阵）──
-        header = _read_touchstone_header(tmp_path)
-        if header is None:
-            os.unlink(tmp_path)
-            return jsonify({"error": "无法解析 Touchstone 文件头"}), 400
-
+        # 使用 skrf 直接解析（保证端口数/频率正确）
+        ntwk = rf.Network(tmp_path)
         if session_id not in sessions:
             sessions[session_id] = {"networks": {}}
 
-        nports = header["nports"]
+        nports = ntwk.nports
         all_params = [f"S{m+1}{n+1}" for m in range(nports) for n in range(nports)]
 
         sessions[session_id]["networks"][name] = {
             "path": tmp_path,
-            "_ntwk": None,  # 延迟加载
+            "_ntwk": ntwk,
             "nports": nports,
-            "f_min": header["f_min"],
-            "f_max": header["f_max"],
-            "npoints": header["npoints"],
+            "f_min": float(ntwk.f[0]),
+            "f_max": float(ntwk.f[-1]),
+            "npoints": len(ntwk.f),
             "params": all_params,
         }
 
-        freq_unit = header["freq_unit"]
+        freq_unit = _guess_freq_unit(ntwk)
         sessions[session_id]["freq_unit"] = freq_unit
 
         display_params = all_params if len(all_params) <= 200 else all_params[:200]
@@ -691,10 +687,10 @@ def upload():
             "ok": True,
             "name": name,
             "nports": nports,
-            "f_min": header["f_min"],
-            "f_max": header["f_max"],
+            "f_min": float(ntwk.f[0]),
+            "f_max": float(ntwk.f[-1]),
             "f_unit": freq_unit,
-            "npoints": header["npoints"],
+            "npoints": len(ntwk.f),
             "params": display_params,
             "params_truncated": len(all_params) > 200,
             "total_params": len(all_params),
@@ -728,30 +724,26 @@ def upload_batch():
             file.save(tmp.name)
             tmp_path = tmp.name
         try:
-            header = _read_touchstone_header(tmp_path)
-            if header is None:
-                os.unlink(tmp_path)
-                results.append({"ok": False, "name": file.filename, "error": "无法解析文件头"})
-                continue
+            ntwk = rf.Network(tmp_path)
             name = Path(file.filename).stem
-            nports = header["nports"]
+            nports = ntwk.nports
             all_params = [f"S{m+1}{n+1}" for m in range(nports) for n in range(nports)]
             sessions[session_id]["networks"][name] = {
                 "path": tmp_path,
-                "_ntwk": None,
+                "_ntwk": ntwk,
                 "nports": nports,
-                "f_min": header["f_min"],
-                "f_max": header["f_max"],
-                "npoints": header["npoints"],
+                "f_min": float(ntwk.f[0]),
+                "f_max": float(ntwk.f[-1]),
+                "npoints": len(ntwk.f),
                 "params": all_params,
             }
             results.append({
                 "ok": True,
                 "name": name,
                 "nports": nports,
-                "f_min": header["f_min"],
-                "f_max": header["f_max"],
-                "npoints": header["npoints"],
+                "f_min": float(ntwk.f[0]),
+                "f_max": float(ntwk.f[-1]),
+                "npoints": len(ntwk.f),
                 "params": all_params[:200],
             })
         except Exception as e:
@@ -782,37 +774,35 @@ def load_local():
         return jsonify({"error": f"文件不存在: {local_path}"}), 404
 
     try:
-        header = _read_touchstone_header(local_path)
-        if header is None:
-            return jsonify({"error": "无法解析 Touchstone 文件头"}), 400
-
+        ntwk = rf.Network(local_path)
         name = data.get("name") or os.path.splitext(os.path.basename(local_path))[0]
         if session_id not in sessions:
             sessions[session_id] = {"networks": {}}
 
-        nports = header["nports"]
+        nports = ntwk.nports
         all_params = [f"S{m+1}{n+1}" for m in range(nports) for n in range(nports)]
 
         sessions[session_id]["networks"][name] = {
             "path": local_path,
-            "_ntwk": None,
+            "_ntwk": ntwk,
             "nports": nports,
-            "f_min": header["f_min"],
-            "f_max": header["f_max"],
-            "npoints": header["npoints"],
+            "f_min": float(ntwk.f[0]),
+            "f_max": float(ntwk.f[-1]),
+            "npoints": len(ntwk.f),
             "params": all_params,
         }
 
+        freq_unit = _guess_freq_unit(ntwk)
         display_params = all_params if len(all_params) <= 200 else all_params[:200]
 
         return jsonify({
             "ok": True,
             "name": name,
             "nports": nports,
-            "f_min": header["f_min"],
-            "f_max": header["f_max"],
-            "f_unit": header["freq_unit"],
-            "npoints": header["npoints"],
+            "f_min": float(ntwk.f[0]),
+            "f_max": float(ntwk.f[-1]),
+            "f_unit": freq_unit,
+            "npoints": len(ntwk.f),
             "params": display_params,
             "params_truncated": len(all_params) > 200,
             "total_params": len(all_params),
@@ -849,10 +839,7 @@ def upload_glob():
     results = []
     for path in matches:
         try:
-            header = _read_touchstone_header(path)
-            if header is None:
-                results.append({"ok": False, "name": os.path.basename(path), "error": "无法解析文件头"})
-                continue
+            ntwk = rf.Network(path)
             name = os.path.splitext(os.path.basename(path))[0]
             # 处理重名：添加后缀
             if name in sessions[session_id]["networks"]:
@@ -861,24 +848,24 @@ def upload_glob():
                 while f"{base}_{idx}" in sessions[session_id]["networks"]:
                     idx += 1
                 name = f"{base}_{idx}"
-            nports = header["nports"]
+            nports = ntwk.nports
             all_params = [f"S{m+1}{n+1}" for m in range(nports) for n in range(nports)]
             sessions[session_id]["networks"][name] = {
                 "path": path,
-                "_ntwk": None,
+                "_ntwk": ntwk,
                 "nports": nports,
-                "f_min": header["f_min"],
-                "f_max": header["f_max"],
-                "npoints": header["npoints"],
+                "f_min": float(ntwk.f[0]),
+                "f_max": float(ntwk.f[-1]),
+                "npoints": len(ntwk.f),
                 "params": all_params,
             }
             results.append({
                 "ok": True,
                 "name": name,
                 "nports": nports,
-                "f_min": header["f_min"],
-                "f_max": header["f_max"],
-                "npoints": header["npoints"],
+                "f_min": float(ntwk.f[0]),
+                "f_max": float(ntwk.f[-1]),
+                "npoints": len(ntwk.f),
                 "params": all_params[:200],
             })
         except Exception as e:
