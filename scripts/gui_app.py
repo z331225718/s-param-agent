@@ -534,19 +534,15 @@ class SParamGUI:
     # ════════════════════════════════════
 
     def _show_image(self, pil_image, title="Agent Chart"):
-        """在图表区显示 PIL Image（Agent 生成结果）。"""
-        from PIL import ImageTk
-        cw = self.chart_frame.winfo_width()
-        ch = self.chart_frame.winfo_height()
-        if cw < 10: cw = 800
-        if ch < 10: ch = 500
-        iw, ih = pil_image.size
-        scale = min(cw / iw, ch / ih, 1.0)
-        if scale < 1.0:
-            pil_image = pil_image.resize((int(iw * scale), int(ih * scale)))
-        self._current_img_tk = ImageTk.PhotoImage(pil_image)
-        self.chart_canvas.delete("all")
-        self.chart_canvas.create_image(cw // 2, ch // 2, image=self._current_img_tk, anchor=tk.CENTER)
+        """在 matplotlib 图表区显示 Agent 生成的 PNG。"""
+        import numpy as np
+        self._clear_chart()
+        self.ax.imshow(np.array(pil_image))
+        self.ax.set_xticks([])
+        self.ax.set_yticks([])
+        self.ax.set_title(title, fontsize=11, family='monospace')
+        self.fig.subplots_adjust(left=0.02, right=0.98, top=0.95, bottom=0.02)
+        self.chart_canvas.draw()
         self.status(title)
 
     def _clear_chart(self):
