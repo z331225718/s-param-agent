@@ -298,7 +298,9 @@ def _user_wants_log_scale(text: str) -> bool:
 
 
 def _inject_log_scale(code: str) -> str:
-    """在代码末尾注入规范对数轴配置。"""
+    """在代码末尾注入规范对数轴配置（如果还没有的话）。"""
+    if "type='log'" in code or 'type="log"' in code or "xaxis_type='log'" in code:
+        return code  # 已有 log 配置，不重复注入
     return code.rstrip() + '\n' + _LOG_INJECTION + '\n'
 
 
@@ -329,25 +331,28 @@ def execute_code(code: str, file_paths: dict = None, networks: dict = None, time
     # 构建网络预加载代码
     nets_init = ""
     if networks:
-        nets_init = f'''
-# ── 预加载网络对象到 _nets ──
-import skrf as rf
-_nets = {{}}
-_networks_config = {json.dumps(networks)}
-for _name, _info in _networks_config.items():
-    try:
-        _nets[_name] = rf.Network(_info["path"])
-    except Exception:
-        pass  # 跳过损坏的文件
-'''
+        nets_init = (
+            "# ── 预加载网络对象到 _nets ──\n"
+            "import skrf as rf\n"
+            "_nets = {}\n"
+            "_networks_config = {}\n".format(json.dumps(networks)) +
+            "for _name, _info in _networks_config.items():\n"
+            "    try:\n"
+            "        _nets[_name] = rf.Network(_info['path'])\n"
+            "    except Exception:\n"
+            "        pass\n"
+        )
 
-    # 构建完整的可执行脚本
-    wrapper = f'''
-import sys, io, json, traceback, os
-{nets_init}
+    # 构建完整的可执行脚本（.format() 传参，避免 f-string 吃掉代码中的 {}）
+    _user_code = _indent(code, "    ")
+    _fp_json = json.dumps(file_paths.get("file_path", "") if file_paths else "")
+    _out_json = json.dumps(tempfile.mktemp(suffix=".json"))
+
+    wrapper = '''import sys, io, json, traceback, os
+{0}
 
 # 注入文件路径（兼容旧代码）
-file_path = {json.dumps(file_paths.get("file_path", "") if file_paths else "")}
+file_path = {1}
 
 # 捕获输出
 stdout_buf = io.StringIO()
@@ -360,27 +365,25 @@ sys.stderr = stderr_buf
 result = {{"ok": False, "figure_json": None, "stdout": "", "stderr": "", "error": None}}
 
 try:
-{_indent(code, "    ")}
+{2}
 
-    # 提取 fig 变量
     fig = locals().get("fig")
     if fig is not None and hasattr(fig, "to_json"):
         result["figure_json"] = json.loads(fig.to_json())
     result["ok"] = True
 except Exception as e:
-    result["error"] = f"{{type(e).__name__}}: {{e}}\\n{{traceback.format_exc()}}"
+    result["error"] = str(type(e).__name__) + ": " + str(e) + "\\n" + traceback.format_exc()
 finally:
     sys.stdout = _orig_stdout
     sys.stderr = _orig_stderr
     result["stdout"] = stdout_buf.getvalue()
     result["stderr"] = stderr_buf.getvalue()
 
-# 输出 JSON 结果到临时文件
-out_path = {json.dumps(tempfile.mktemp(suffix=".json"))}
+out_path = {3}
 with open(out_path, "w") as f:
     json.dump(result, f)
 print("__RESULT_FILE__:" + out_path)
-'''
+'''.format(nets_init, _fp_json, _user_code, _out_json)
 
     try:
         proc = subprocess.run(

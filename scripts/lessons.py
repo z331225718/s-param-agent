@@ -176,7 +176,7 @@ def _extract_diff(wrong_code: str, correct_code: str) -> str:
             # 在正确代码中找最相似的行
             for cl in correct_lines:
                 if _similarity(wl, cl) > 0.5:
-                    diffs.append(f"❌ {wl[:80]}\n✅ {cl[:80]}")
+                    diffs.append("❌ " + wl[:80] + "\n✅ " + cl[:80])
                     break
 
     return "\n".join(diffs[:3])
@@ -193,11 +193,11 @@ def _similarity(a: str, b: str) -> float:
 
 def _format_lesson(wrong_api: str, correct_info: str, code_diff: str) -> str:
     """格式化一条教训。"""
-    parts = [f"❌ `{wrong_api}`"]
+    parts = ["❌ `" + wrong_api + "`"]
     if correct_info:
-        parts.append(f"→ {correct_info[:150]}")
+        parts.append("→ " + correct_info[:150])
     if code_diff:
-        parts.append(f"\n{code_diff[:200]}")
+        parts.append("\n" + code_diff[:200])
     return " ".join(parts)
 
 
@@ -237,11 +237,11 @@ def build_lessons_prompt(max_items: int = 15) -> str:
         wp = l.get("wrong_pattern", "")
         ci = l.get("correct_info", "")
         cnt = l.get("count", 1)
-        tag = f" (×{cnt})" if cnt > 1 else ""
+        tag = " (x" + str(cnt) + ")" if cnt > 1 else ""
         if ci:
-            lines.append(f"- ❌ `{wp}`{tag} → {ci[:120]}")
+            lines.append("- ❌ `" + wp + "`" + tag + " → " + ci[:120])
         else:
-            lines.append(f"- ❌ `{wp}`{tag}")
+            lines.append("- ❌ `" + wp + "`" + tag)
 
     return "\n".join(lines)
 
