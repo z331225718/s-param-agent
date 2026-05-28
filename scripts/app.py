@@ -684,7 +684,7 @@ def upload():
             sessions[session_id] = {"networks": {}}
 
         nports = ntwk.nports
-        all_params = [f"S{m+1}{n+1}" for m in range(nports) for n in range(nports)]
+        all_params = [f"S{m+1}_{n+1}" for m in range(nports) for n in range(nports)]
 
         sessions[session_id]["networks"][name] = {
             "path": tmp_path,
@@ -747,7 +747,7 @@ def upload_batch():
             ntwk = rf.Network(tmp_path)
             name = Path(file.filename).stem
             nports = ntwk.nports
-            all_params = [f"S{m+1}{n+1}" for m in range(nports) for n in range(nports)]
+            all_params = [f"S{m+1}_{n+1}" for m in range(nports) for n in range(nports)]
             sessions[session_id]["networks"][name] = {
                 "path": tmp_path,
                 "_ntwk": ntwk,
@@ -802,7 +802,7 @@ def load_local():
             sessions[session_id] = {"networks": {}}
 
         nports = ntwk.nports
-        all_params = [f"S{m+1}{n+1}" for m in range(nports) for n in range(nports)]
+        all_params = [f"S{m+1}_{n+1}" for m in range(nports) for n in range(nports)]
 
         sessions[session_id]["networks"][name] = {
             "path": local_path,
@@ -873,7 +873,7 @@ def upload_glob():
                     idx += 1
                 name = f"{base}_{idx}"
             nports = ntwk.nports
-            all_params = [f"S{m+1}{n+1}" for m in range(nports) for n in range(nports)]
+            all_params = [f"S{m+1}_{n+1}" for m in range(nports) for n in range(nports)]
             sessions[session_id]["networks"][name] = {
                 "path": path,
                 "_ntwk": ntwk,
@@ -1034,7 +1034,9 @@ def generate_chart():
             for p in params:
                 m, n = _parse_param(p)
 
-                if chart_type == "db":
+                if p.upper().startswith("Z"):
+                    trace = _make_zmag_trace(ntwk, m, n, label, p)
+                elif chart_type == "db":
                     trace = _make_db_trace(ntwk, m, n, label, p)
                 elif chart_type == "deg":
                     trace = _make_deg_trace(ntwk, m, n, label, p)
@@ -1568,15 +1570,16 @@ def _guess_freq_unit(ntwk):
 
 
 def _parse_param(p: str):
-    """'S11' → (0, 0), 'S21' → (1, 0), 'Z11' → (0, 0)."""
+    """'S2_1' → (1, 0), 'Z64_64' → (63, 63). Legacy 'S21' also accepted."""
     p = p.strip().upper()
+    if "_" in p:
+        rest = p[1:]
+        parts = rest.split("_", 1)
+        return int(parts[0]) - 1, int(parts[1]) - 1
     if p.startswith(("S", "Z")) and len(p) == 3:
-        m = int(p[1]) - 1
-        n = int(p[2]) - 1
-        return m, n
+        return int(p[1]) - 1, int(p[2]) - 1
     if p.startswith("VSWR"):
-        port = int(p[4:]) - 1
-        return port, None
+        return int(p[4:]) - 1, None
     raise ValueError(f"无法解析参数: {p}")
 
 
@@ -1709,7 +1712,9 @@ def _make_layout(chart_type, title, options):
         base["yaxis"]["title"] = "Group Delay (ns)"
     elif chart_type == "zmag":
         base["xaxis"]["title"] = "Frequency (GHz)"
+        base["xaxis"]["type"] = "log"
         base["yaxis"]["title"] = "Magnitude |Z| (ohm)"
+        base["yaxis"]["type"] = "log"
 
     # 覆盖用户选项
     if options.get("title"):
