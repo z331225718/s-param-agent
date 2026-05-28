@@ -495,7 +495,8 @@ def _get_llm_config():
                     "api_key": api_key,
                     "base_url": cfg.get("base_url", "https://api.deepseek.com"),
                     "model": cfg.get("model", "deepseek-chat"),
-                    "thinking": cfg.get("thinking", False),
+                    "think": cfg.get("think", False),
+                    "timeout_sec": cfg.get("timeout_sec", 60),
                 }
         except json.JSONDecodeError as e:
             _sys.stderr.write(f"[WARN] config.json 解析失败 ({config_path}): {e}\n")
@@ -559,6 +560,9 @@ def generate_code(user_text: str, file_path: str = None, networks: dict = None) 
     history = []
     last_code = ""
 
+    _think = config.get("think", False)
+    _timeout = config.get("timeout_sec", 120 if _think else 60)
+
     for attempt in range(1, MAX_RETRIES + 2):  # 1 初始 + 最多 3 次纠错 = 最多 4 次
         payload = {
             "model": config["model"],
@@ -566,9 +570,8 @@ def generate_code(user_text: str, file_path: str = None, networks: dict = None) 
             "temperature": 0.0,
             "max_tokens": 1500,
         }
-        # 思考模式：DeepSeek thinking / OpenAI reasoning
-        if config.get("thinking"):
-            payload["thinking"] = {"type": "enabled"}
+        if _think:
+            payload["max_tokens"] = 8192
 
         try:
             req = urllib.request.Request(
@@ -579,7 +582,7 @@ def generate_code(user_text: str, file_path: str = None, networks: dict = None) 
                     "Content-Type": "application/json",
                 },
             )
-            with urllib.request.urlopen(req, timeout=60) as resp:
+            with urllib.request.urlopen(req, timeout=_timeout) as resp:
                 result = json.loads(resp.read().decode("utf-8"))
         except Exception as e:
             return {"error": f"LLM 调用失败: {e}", "retries": attempt - 1, "history": history}
