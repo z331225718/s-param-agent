@@ -495,6 +495,7 @@ def _get_llm_config():
                     "api_key": api_key,
                     "base_url": cfg.get("base_url", "https://api.deepseek.com"),
                     "model": cfg.get("model", "deepseek-chat"),
+                    "thinking": cfg.get("thinking", False),
                 }
         except json.JSONDecodeError as e:
             _sys.stderr.write(f"[WARN] config.json 解析失败 ({config_path}): {e}\n")
@@ -565,6 +566,9 @@ def generate_code(user_text: str, file_path: str = None, networks: dict = None) 
             "temperature": 0.0,
             "max_tokens": 1500,
         }
+        # 思考模式：DeepSeek thinking / OpenAI reasoning
+        if config.get("thinking"):
+            payload["thinking"] = {"type": "enabled"}
 
         try:
             req = urllib.request.Request(
