@@ -9,7 +9,7 @@ import numpy as np
 
 
 POWER_TOKENS = {"VDD", "VCC", "VSS", "GND", "PWR", "POWER", "PDN", "VRM"}
-SIGNAL_TOKENS = {"TX", "RX", "DP", "DN", "CH", "LINE", "NET", "P", "N"}
+SIGNAL_TOKENS = {"TX", "RX", "DP", "DN", "CH", "LINE", "NET"}
 ENDPOINT_TOKENS = {
     "J1", "J2", "J3", "J4", "NEAR", "FAR", "IN", "OUT", "INPUT", "OUTPUT",
     "TX", "RX", "SRC", "DST", "SOURCE", "LOAD", "A", "B",
@@ -81,6 +81,11 @@ def detect_port_pairs(ntwk) -> List[Dict]:
     return pairs
 
 
+def _param_name(prefix: str, m: int, n: int) -> str:
+    """Format a param name like S2_1, Z10_10."""
+    return f"{prefix}{m}_{n}"
+
+
 def build_quick_actions(ntwk) -> List[Dict]:
     """Build concrete quick actions for the dashboard."""
     kind = classify_network(ntwk)
@@ -92,7 +97,7 @@ def build_quick_actions(ntwk) -> List[Dict]:
             "id": "zmag",
             "label": "mag(Zxx)",
             "chart_type": "zmag",
-            "params": [f"Z{i + 1}{i + 1}" for i in range(nports)],
+            "params": [_param_name("Z", i + 1, i + 1) for i in range(nports)],
         }]
 
     actions = []
@@ -101,13 +106,13 @@ def build_quick_actions(ntwk) -> List[Dict]:
             "id": "rl",
             "label": "RL",
             "chart_type": "db",
-            "params": [f"S{i + 1}{i + 1}" for i in range(nports)],
+            "params": [_param_name("S", i + 1, i + 1) for i in range(nports)],
         })
 
         il_params = []
         for pair in pairs:
             a, b = pair["a"], pair["b"]
-            il_params.append(f"S{b + 1}{a + 1}")
+            il_params.append(_param_name("S", b + 1, a + 1))
         if il_params:
             actions.append({"id": "il", "label": "IL", "chart_type": "db", "params": _unique(il_params)})
 
@@ -185,8 +190,8 @@ def _crosstalk_params(pairs: List[Dict]):
     fext_params = []
     for i in range(len(pairs)):
         for j in range(i + 1, len(pairs)):
-            next_params.append(f"S{near[j] + 1}{near[i] + 1}")
-            fext_params.append(f"S{far[j] + 1}{near[i] + 1}")
+            next_params.append(_param_name("S", near[j] + 1, near[i] + 1))
+            fext_params.append(_param_name("S", far[j] + 1, near[i] + 1))
     return _unique(next_params), _unique(fext_params)
 
 
