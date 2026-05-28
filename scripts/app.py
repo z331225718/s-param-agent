@@ -307,11 +307,17 @@ def _execute_op(op, session_id: str, last_ntwk_name: str = None) -> dict:
     if op.action == "load":
         if not op.target:
             return {"type": "error", "message": "没有指定文件名"}
+        # 如果 target 是目录，走批量加载
+        if os.path.isdir(op.target):
+            return _load_dir_to_session(op.target, session_id, ses)
         # 尝试在当前目录及子目录搜索文件
         import glob as globmod
         candidates = globmod.glob(f"**/{op.target}", recursive=True)
         if not candidates:
             candidates = globmod.glob(f"**/{os.path.basename(op.target)}", recursive=True)
+        # 检查候选是否为目录
+        if candidates and os.path.isdir(candidates[0]):
+            return _load_dir_to_session(candidates[0], session_id, ses)
         if candidates:
             op.target = candidates[0]
 
@@ -541,6 +547,9 @@ def _execute_op(op, session_id: str, last_ntwk_name: str = None) -> dict:
         pattern = op.batch_pattern or op.target
         if not pattern:
             return {"type": "error", "message": "请提供文件匹配模式，例如 'data/*.s2p'"}
+        # 如果 pattern 是目录，走文件夹扫描
+        if os.path.isdir(pattern):
+            return _load_dir_to_session(pattern, session_id, ses)
         import glob as globmod
         matches = globmod.glob(pattern, recursive=True)
         if not matches:
@@ -784,7 +793,9 @@ def upload_batch():
 def load_local():
     """
     直接从本地路径加载文件（跳过上传，适合大文件）。
+    支持单个文件路径和文件夹路径（自动扫描所有 .sNp）。
     接收 JSON: { "path": "/data/big.s64p", "session": "default" }
+               { "path": "/data/folder",   "session": "default" }
     """
     data = request.get_json()
     local_path = data.get("path", "").strip()
@@ -793,11 +804,73 @@ def load_local():
     if not local_path:
         return jsonify({"error": "请提供本地文件路径"}), 400
     if not os.path.exists(local_path):
-        return jsonify({"error": f"文件不存在: {local_path}"}), 404
+        return jsonify({"error": f"路径不存在: {local_path}"}), 404
 
+    if os.path.isdir(local_path):
+        return _load_local_dir(local_path, session_id)
+
+    return _load_local_file(local_path, session_id, data.get("name"))
+
+
+def _load_local_dir(dir_path, session_id):
+    """扫描文件夹下所有 .sNp 文件并加载。"""
+    snp_exts = {f".s{p}p" for p in range(1, 65)} | {".ts"}
+    files = sorted(
+        f for f in os.listdir(dir_path)
+        if os.path.isfile(os.path.join(dir_path, f)) and Path(f).suffix.lower() in snp_exts
+    )
+    if not files:
+        return jsonify({"error": f"文件夹中未找到 .sNp 文件: {dir_path}"}), 404
+
+    if session_id not in sessions:
+        sessions[session_id] = {"networks": {}}
+
+    results = []
+    for fname in files:
+        fpath = os.path.join(dir_path, fname)
+        try:
+            ntwk = rf.Network(fpath)
+            name = os.path.splitext(fname)[0]
+            name = _dedup_name(sessions[session_id]["networks"], name)
+            nports = ntwk.nports
+            all_params = [f"S{m+1}_{n+1}" for m in range(nports) for n in range(nports)]
+            sessions[session_id]["networks"][name] = {
+                "path": fpath,
+                "_ntwk": ntwk,
+                "nports": nports,
+                "f_min": float(ntwk.f[0]),
+                "f_max": float(ntwk.f[-1]),
+                "npoints": len(ntwk.f),
+                "params": all_params,
+                **_inspect_network(ntwk),
+            }
+            results.append({
+                "ok": True,
+                "name": name,
+                "nports": nports,
+                "f_min": float(ntwk.f[0]),
+                "f_max": float(ntwk.f[-1]),
+                "npoints": len(ntwk.f),
+                "params": all_params[:200],
+                **_inspect_network(ntwk),
+            })
+        except Exception as e:
+            results.append({"ok": False, "name": fname, "error": str(e)})
+
+    return jsonify({
+        "ok": True,
+        "is_dir": True,
+        "loaded": [r for r in results if r.get("ok")],
+        "failed": [r for r in results if not r.get("ok")],
+        "total": len(results),
+    })
+
+
+def _load_local_file(local_path, session_id, name_override=None):
+    """加载单个本地 .sNp 文件。"""
     try:
         ntwk = rf.Network(local_path)
-        name = data.get("name") or os.path.splitext(os.path.basename(local_path))[0]
+        name = name_override or os.path.splitext(os.path.basename(local_path))[0]
         if session_id not in sessions:
             sessions[session_id] = {"networks": {}}
 
@@ -836,6 +909,53 @@ def load_local():
         return jsonify({"error": str(e)}), 500
 
 
+def _dedup_name(networks, name, start=2):
+    """确保名称在 networks 中不重复，重复时添加数字后缀。"""
+    if name not in networks:
+        return name
+    base = name
+    idx = start
+    while f"{base}_{idx}" in networks:
+        idx += 1
+    return f"{base}_{idx}"
+
+
+def _load_dir_to_session(dir_path, session_id, ses):
+    """扫描文件夹下所有 .sNp 文件并加载到会话中（用于 chat 命令）。"""
+    snp_exts = {f".s{p}p" for p in range(1, 65)} | {".ts"}
+    files = sorted(
+        f for f in os.listdir(dir_path)
+        if os.path.isfile(os.path.join(dir_path, f)) and Path(f).suffix.lower() in snp_exts
+    )
+    if not files:
+        return {"type": "error", "message": f"文件夹中未找到 .sNp 文件: {dir_path}"}
+
+    loaded = []
+    for fname in files:
+        fpath = os.path.join(dir_path, fname)
+        try:
+            ntwk = sp.load_ntwk(fpath)
+            name = os.path.splitext(fname)[0]
+            name = _dedup_name(ses["networks"], name)
+            ses["networks"][name] = {
+                "path": fpath,
+                "nports": ntwk.nports,
+                "f_min": float(ntwk.f[0]),
+                "f_max": float(ntwk.f[-1]),
+                "npoints": len(ntwk.f),
+                "params": sp.list_params(ntwk),
+                **_inspect_network(ntwk),
+            }
+            loaded.append(name)
+        except Exception:
+            pass
+    return {
+        "type": "text",
+        "message": f"📂 文件夹加载完成: {len(loaded)} 个文件\n  " + ", ".join(loaded),
+        "ntwk_name": loaded[-1] if loaded else None,
+    }
+
+
 @app.route("/api/upload/glob", methods=["POST"])
 def upload_glob():
     """通过通配符模式批量加载本地文件。
@@ -865,13 +985,7 @@ def upload_glob():
         try:
             ntwk = rf.Network(path)
             name = os.path.splitext(os.path.basename(path))[0]
-            # 处理重名：添加后缀
-            if name in sessions[session_id]["networks"]:
-                base = name
-                idx = 2
-                while f"{base}_{idx}" in sessions[session_id]["networks"]:
-                    idx += 1
-                name = f"{base}_{idx}"
+            name = _dedup_name(sessions[session_id]["networks"], name)
             nports = ntwk.nports
             all_params = [f"S{m+1}_{n+1}" for m in range(nports) for n in range(nports)]
             sessions[session_id]["networks"][name] = {
