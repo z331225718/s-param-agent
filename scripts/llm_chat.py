@@ -27,18 +27,45 @@ def is_available() -> bool:
 
 
 def get_llm_config() -> dict:
-    """返回 LLM 配置"""
+    """返回 LLM 配置：config.json 优先，其次环境变量。"""
+    # 1. config.json
+    for config_path in [
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json"),
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "config.json"),
+    ]:
+        config_path = os.path.normpath(config_path)
+        if not os.path.exists(config_path):
+            continue
+        try:
+            with open(config_path, "r") as f:
+                cfg = json.load(f).get("llm", {})
+            api_key = cfg.get("api_key", "")
+            if not api_key:
+                api_key = os.environ.get("DEEPSEEK_API_KEY") or os.environ.get("OPENAI_API_KEY") or ""
+            if api_key:
+                return {
+                    "api_key": api_key,
+                    "base_url": cfg.get("base_url", "https://api.deepseek.com"),
+                    "model": cfg.get("model", "deepseek-chat"),
+                    "timeout_sec": cfg.get("timeout_sec", 60),
+                }
+        except Exception:
+            pass
+
+    # 2. 环境变量 fallback
     if os.environ.get("DEEPSEEK_API_KEY"):
         return {
             "api_key": os.environ["DEEPSEEK_API_KEY"],
             "base_url": os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
             "model": os.environ.get("DEEPSEEK_MODEL", "deepseek-chat"),
+            "timeout_sec": 60,
         }
     elif os.environ.get("OPENAI_API_KEY"):
         return {
             "api_key": os.environ["OPENAI_API_KEY"],
             "base_url": os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1"),
             "model": os.environ.get("OPENAI_MODEL", "gpt-4o-mini"),
+            "timeout_sec": 60,
         }
     return {}
 
@@ -133,7 +160,7 @@ def parse_with_llm(text: str, available_files: List[str] = None) -> Optional[Lis
             },
         )
 
-        with urllib.request.urlopen(req, timeout=60) as resp:
+        with urllib.request.urlopen(req, timeout=config.get("timeout_sec", 60)) as resp:
             result = json.loads(resp.read().decode("utf-8"))
 
         content = result["choices"][0]["message"]["content"].strip()
