@@ -162,8 +162,9 @@ def summary(ntwk: rf.Network) -> dict:
 
 
 def list_params(ntwk: rf.Network) -> List[str]:
-    """返回所有 S 参数的名称列表，如 ['S11', 'S12', 'S21', 'S22']。"""
-    return [f"S{m+1}{n+1}" for m in range(ntwk.nports) for n in range(ntwk.nports)]
+    """返回所有 S 参数的名称列表，如 ['S1_1', 'S1_2', 'S2_1', 'S2_2']。"""
+    nports = ntwk.nports
+    return [f"S{m+1}_{n+1}" for m in range(nports) for n in range(nports)]
 
 
 # ─── 3. 数据提取 ───────────────────────────────────────────────────────
@@ -450,9 +451,10 @@ def _param_label(m: int, n: int, ntwk_name: str = "") -> str:
 def _parse_params(ntwk: rf.Network, params) -> List[Tuple[int, int]]:
     """
     标准化 params 参数。支持：
-        - "S11" / "S21" 字符串
+        - "S2_1" / "Z64_64" 下划线格式
+        - "S11" / "S21" 旧格式（兼容）
         - (0,0) / (1,0) 元组
-        - ["S11", "S21"] 列表
+        - ["S2_1", "S1_2"] 列表
         - None → 返回全参数列表
     返回 [(m, n), ...] 列表。
     """
@@ -464,11 +466,11 @@ def _parse_params(ntwk: rf.Network, params) -> List[Tuple[int, int]]:
     for p in items:
         if isinstance(p, str):
             p = p.strip().upper()
-            if p.startswith("S") and len(p) == 3:
-                m = int(p[1]) - 1
-                n = int(p[2]) - 1
-                result.append((m, n))
-            # VSWR 不在这里处理——由专门的 vswr 函数处理
+            if "_" in p:
+                parts = p[1:].split("_", 1)
+                result.append((int(parts[0]) - 1, int(parts[1]) - 1))
+            elif p.startswith("S") and len(p) == 3:
+                result.append((int(p[1]) - 1, int(p[2]) - 1))
         elif isinstance(p, (tuple, list)) and len(p) == 2:
             result.append((int(p[0]), int(p[1])))
     return result
