@@ -51,6 +51,7 @@ SLICE_WORDS = ["截", "截取", "裁剪", "切片", "只看", "只保留", "slic
 EXPORT_WORDS = ["导出", "保存", "下载", "输出", "export", "save", "download", "output"]
 LIST_WORDS = ["列出", "有哪些", "哪些文件", "文件列表", "list", "show files"]
 BATCH_WORDS = ["批量加载", "批量读取", "加载所有", "加载多个", "batch load", "load all", "load batch"]
+DIR_WORDS = ["文件夹", "目录", "folder", "directory", "dir"]
 COMPARE_WORDS = ["对比", "比较", "对比图", "比较图", "放在一起", "叠加", "compare", "overlay", "diff"]
 GLOB_PATTERN = re.compile(r'["\']?([\w*?./\\-]+\.s\dp)["\']?', re.IGNORECASE)
 
@@ -164,6 +165,13 @@ def _parse_segment(seg: str, available_files: List[str] = None) -> Optional[SPar
     if glob_match and any(c in seg for c in "*?[]"):
         op.batch_pattern = glob_match.group(1)
 
+    # ── 检测文件夹路径（无扩展名的路径）──
+    path_match = re.search(r'["\']?([\w./\\-]+)["\']?', seg)
+    if path_match and action == "load_batch" and not op.batch_pattern:
+        candidate = path_match.group(1)
+        if not re.search(r'\.\w+$', candidate):  # 无扩展名 → 可能是文件夹
+            op.batch_pattern = candidate
+
     # ── 提取文件 ──
     file_matches = SNP_PATTERN.findall(seg) or FILE_PATTERN.findall(seg)
     if file_matches:
@@ -231,6 +239,8 @@ def _detect_action(text: str) -> str:
     if any(sep in text for sep in ["→", "->", ">>"]):
         return "cascade"
     if any(w in text for w in BATCH_WORDS):
+        return "load_batch"
+    if any(w in text for w in DIR_WORDS):
         return "load_batch"
     if any(w in text for w in LOAD_WORDS):
         return "load"
