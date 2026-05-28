@@ -390,7 +390,7 @@ function getParamList(nports) {
   const list = [];
   for (let m = 1; m <= nports; m++) {
     for (let n = 1; n <= nports; n++) {
-      list.push(`S${m}${n}`);
+      list.push(`S${m}_${n}`);
     }
   }
   return list;
@@ -430,6 +430,7 @@ function renderParamTags() {
     quickHTML = quickActions.map((action, idx) =>
       `<button onclick="applyQuickAction(${idx})" title="${action.params.join(', ')}" style="font-size:0.7rem;padding:3px 8px;border-radius:3px;">${action.label}</button>`
     ).join('');
+    quickHTML += `<button onclick="selectAllParams()" style="font-size:0.7rem;padding:3px 8px;border-radius:3px;">全选</button>`;
   } else {
     const quickBtns = [
       ['all', '全部'],
@@ -444,6 +445,7 @@ function renderParamTags() {
       `<button onclick="quickSelect('${kind}')" style="font-size:0.7rem;padding:3px 8px;border-radius:3px;">${label}</button>`
     ).join('');
   }
+  quickHTML += `<button onclick="clearParams()" style="font-size:0.7rem;padding:3px 8px;border-radius:3px;">清空</button>`;
 
   const kindLabel = net.network_kind ? ` · ${net.network_kind}` : '';
 
@@ -452,7 +454,7 @@ function renderParamTags() {
     ${chips ? `<div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:6px;">${chips}</div>` : ''}
     <div style="display:flex;gap:4px;margin-bottom:4px;flex-wrap:wrap;">${quickHTML}</div>
     <div style="display:flex;gap:6px;position:relative;">
-      <input type="text" id="paramSearch" placeholder="搜索 S21 或 S42…" autocomplete="off"
+      <input type="text" id="paramSearch" placeholder="搜索 S2_1 或 Z1_1…" autocomplete="off"
         style="flex:1;background:#12122a;border:1px solid var(--border);color:var(--text);padding:5px 8px;border-radius:4px;font-size:0.78rem;"
         oninput="onParamSearch(this.value)" onfocus="onParamSearch(this.value)" onkeydown="onParamKey(event)">
       <button onclick="addSearchedParam()" style="padding:4px 12px;font-size:0.78rem;">+</button>
@@ -469,12 +471,15 @@ function onParamSearch(query) {
   const q = query.trim().toUpperCase();
   if (!q) { dd.style.display = 'none'; return; }
 
-  // 生成本地匹配
+  // 生成本地匹配（S 和 Z 参数）
   const matches = [];
-  for (let m = 1; m <= nports && matches.length < 50; m++) {
-    for (let n = 1; n <= nports && matches.length < 50; n++) {
-      const s = `S${m}${n}`;
-      if (s.includes(q)) matches.push(s);
+  const prefixes = ['S', 'Z'];
+  for (const prefix of prefixes) {
+    for (let m = 1; m <= nports && matches.length < 50; m++) {
+      for (let n = 1; n <= nports && matches.length < 50; n++) {
+        const s = `${prefix}${m}_${n}`;
+        if (s.includes(q)) matches.push(s);
+      }
     }
   }
   if (matches.length === 0) { dd.style.display = 'none'; return; }
@@ -537,6 +542,18 @@ function applyQuickAction(index) {
   if (!action) return;
   state.selectedParams = Array.isArray(action.params) ? [...action.params] : [];
   state.chartType = action.chart_type || 'db';
+  renderParamTags();
+}
+
+function selectAllParams() {
+  const net = state.networks[state.selectedFile];
+  if (!net) return;
+  state.selectedParams = Array.isArray(net.params) ? [...net.params] : [];
+  renderParamTags();
+}
+
+function clearParams() {
+  state.selectedParams = [];
   renderParamTags();
 }
 
