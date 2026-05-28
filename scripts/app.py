@@ -1107,8 +1107,15 @@ def remove_network(name):
     session_id = request.args.get("session", "default")
     if session_id in sessions and name in sessions[session_id]["networks"]:
         info = sessions[session_id]["networks"][name]
-        if os.path.exists(info["path"]):
-            os.unlink(info["path"])
+        # 只删除临时文件（位于系统 temp 目录），不删用户原始文件
+        fpath = info.get("path", "")
+        if fpath and os.path.exists(fpath):
+            try:
+                _tmp = tempfile.gettempdir()
+                if os.path.normpath(fpath).startswith(os.path.normpath(_tmp)):
+                    os.unlink(fpath)
+            except Exception:
+                pass
         del sessions[session_id]["networks"][name]
     return jsonify({"ok": True})
 
