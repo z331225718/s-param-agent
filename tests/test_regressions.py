@@ -150,7 +150,7 @@ class TestNetworkInspector(unittest.TestCase):
         info = network_inspector.inspect_network(ntwk)
 
         self.assertEqual("power", info["network_kind"])
-        self.assertEqual(["Z11", "Z22"], info["quick_actions"][0]["params"])
+        self.assertEqual(["Z1_1", "Z2_2"], info["quick_actions"][0]["params"])
         self.assertEqual("zmag", info["quick_actions"][0]["chart_type"])
 
     def test_signal_names_generate_rl_il_next_fext(self):
@@ -166,9 +166,9 @@ class TestNetworkInspector(unittest.TestCase):
 
         self.assertEqual("signal", info["network_kind"])
         self.assertIn({"a": 0, "b": 1, "source": "name", "confidence": "high"}, info["port_pairs"])
-        self.assertEqual(["S11", "S22", "S33", "S44"], actions["rl"]["params"])
-        self.assertIn("S21", actions["il"]["params"])
-        self.assertIn("S43", actions["il"]["params"])
+        self.assertEqual(["S1_1", "S2_2", "S3_3", "S4_4"], actions["rl"]["params"])
+        self.assertIn("S2_1", actions["il"]["params"])
+        self.assertIn("S4_3", actions["il"]["params"])
         self.assertTrue(actions["next"]["params"])
         self.assertTrue(actions["fext"]["params"])
 
@@ -211,14 +211,14 @@ class TestNetworkMetadataApi(unittest.TestCase):
             resp = client.post("/api/chart", json={
                 "session": "test",
                 "type": "zmag",
-                "networks": [{"name": "fixture", "params": ["Z11"], "label": "fixture"}],
+                "networks": [{"name": "fixture", "params": ["Z1_1"], "label": "fixture"}],
                 "title": "PDN impedance",
             })
 
         self.assertEqual(200, resp.status_code)
         fig = resp.get_json()
         self.assertEqual("Magnitude |Z| (ohm)", fig["layout"]["yaxis"]["title"])
-        self.assertEqual("fixture Z11", fig["data"][0]["name"])
+        self.assertEqual("fixture Z1_1", fig["data"][0]["name"])
 
 
 class TestCodeValidator(unittest.TestCase):
