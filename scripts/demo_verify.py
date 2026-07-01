@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-自验证脚本：生成示例 S 参数数据，跑通 读→处理→画图→导出 全流程。
+自验证脚本：生成示例 S 参数数据，跑通 读->处理->画图->导出 全流程。
 """
 
 import sys, os
@@ -10,11 +10,14 @@ import numpy as np
 import skrf as rf
 import s_params as sp
 
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(errors="replace")
+
 OUT = os.path.join(os.path.dirname(__file__), "demo_output")
 os.makedirs(OUT, exist_ok=True)
 
 print("=" * 60)
-print("  S-Parameter Agent — 自验证")
+print("  S-Parameter Agent - 自验证")
 print("=" * 60)
 
 # ── 1. 生成示例双端口网络 ──
@@ -52,7 +55,7 @@ sp.info(ntwk_loaded)
 d = sp.summary(ntwk_loaded)
 assert d["nports"] == 2
 assert d["npoints"] == 101
-print("   summary() 通过 ✓")
+print("   [OK] summary() 通过")
 
 # ── 3. 数据提取 ──
 print("\n[3/6] 测试数据提取...")
@@ -67,7 +70,7 @@ gd = sp.get_group_delay(ntwk_loaded, 1, 0)
 print(f"   群时延范围: {gd.min():.4f} ~ {gd.max():.4f} ns")
 
 z1 = sp.get_z(ntwk_loaded, 0)
-print(f"   Z1 实部范围: {z1.real.min():.1f} ~ {z1.real.max():.1f} Ω")
+print(f"   Z1 实部范围: {z1.real.min():.1f} ~ {z1.real.max():.1f} ohm")
 
 # ── 4. 处理 ──
 print("\n[4/6] 测试处理操作...")
@@ -75,52 +78,52 @@ sliced = sp.slice_freq(ntwk_loaded, "2-4ghz")
 print(f"   截取 2-4GHz: {len(sliced.f)} 点 (原 {len(ntwk_loaded.f)} 点)")
 
 result = sp.cascade(ntwk_loaded, ntwk_loaded)
-print(f"   级联: {result.nports} 端口 ✓")
+print(f"   [OK] 级联: {result.nports} 端口")
 
 z50 = sp.renormalize(ntwk_loaded, 75)
-print(f"   重归一化 75Ω ✓")
+print(f"   [OK] 重归一化 75 ohm")
 
 # ── 5. 画交互式图表 ──
 print("\n[5/6] 生成交互式 HTML 图表...")
 
 # dB 图
 sp.plot_s_db(ntwk_loaded, ["S11", "S21"],
-             title="Demo Filter — S-Parameters (dB)",
+             title="Demo Filter - S-Parameters (dB)",
              save_to=os.path.join(OUT, "demo_db.html"))
-print(f"   {OUT}/demo_db.html ✓")
+print(f"   [OK] {OUT}/demo_db.html")
 
 # 相位图
 sp.plot_s_deg(ntwk_loaded, ["S21"],
-              title="Demo Filter — S21 Phase",
+              title="Demo Filter - S21 Phase",
               save_to=os.path.join(OUT, "demo_phase.html"))
-print(f"   {OUT}/demo_phase.html ✓")
+print(f"   [OK] {OUT}/demo_phase.html")
 
 # Smith 圆图
 sp.plot_s_smith(ntwk_loaded, ["S11"],
-                title="Demo Filter — S11 Smith Chart",
+                title="Demo Filter - S11 Smith Chart",
                 save_to=os.path.join(OUT, "demo_smith.html"))
-print(f"   {OUT}/demo_smith.html ✓")
+print(f"   [OK] {OUT}/demo_smith.html")
 
 # VSWR
 sp.plot_vswr(ntwk_loaded, [0, 1],
-             title="Demo Filter — VSWR",
+             title="Demo Filter - VSWR",
              save_to=os.path.join(OUT, "demo_vswr.html"))
-print(f"   {OUT}/demo_vswr.html ✓")
+print(f"   [OK] {OUT}/demo_vswr.html")
 
 # ── 6. 导出 ──
 print("\n[6/6] 测试导出...")
 sp.save_touchstone(ntwk_loaded, os.path.join(OUT, "exported.s2p"))
-print(f"   Touchstone: {OUT}/exported.s2p ✓")
+print(f"   [OK] Touchstone: {OUT}/exported.s2p")
 
 sp.export_csv(ntwk_loaded, ["S11", "S21"], os.path.join(OUT, "exported.csv"))
-print(f"   CSV: {OUT}/exported.csv ✓")
+print(f"   [OK] CSV: {OUT}/exported.csv")
 
 # 综合报告
 sp.generate_report(ntwk_loaded, os.path.join(OUT, "demo_report.html"))
-print(f"   综合报告: {OUT}/demo_report.html ✓")
+print(f"   [OK] 综合报告: {OUT}/demo_report.html")
 
 print("\n" + "=" * 60)
-print("  ✅ 全部验证通过！")
+print("  [OK] 全部验证通过！")
 print(f"  输出目录: {OUT}")
 print("  浏览器打开任意 .html 文件查看交互图表")
 print("=" * 60)

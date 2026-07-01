@@ -1,6 +1,7 @@
 import io
 import os
 import sys
+import tempfile
 import unittest
 
 import numpy as np
@@ -58,6 +59,21 @@ def register_network(ntwk, session="test", name="fixture"):
     }
 
 
+def register_networks(networks, session="test"):
+    app_module.sessions.clear()
+    app_module.sessions[session] = {"networks": {}}
+    for name, ntwk in networks.items():
+        app_module.sessions[session]["networks"][name] = {
+            "path": "",
+            "_ntwk": ntwk,
+            "nports": ntwk.nports,
+            "f_min": float(ntwk.f[0]),
+            "f_max": float(ntwk.f[-1]),
+            "npoints": len(ntwk.f),
+            "params": sp.list_params(ntwk),
+        }
+
+
 class TestNaturalLanguageParser(unittest.TestCase):
     def test_export_csv_keeps_csv_format(self):
         ops = nl_parser.parse("导出 S21 为 CSV")
@@ -72,6 +88,71 @@ class TestNaturalLanguageParser(unittest.TestCase):
 
         self.assertEqual(1, len(ops))
         self.assertEqual("touchstone", ops[0].export_format)
+
+    def test_compare_fills_two_available_networks(self):
+        ops = nl_parser.parse("对比 A 和 B 的 S21", ["A", "B"])
+
+        self.assertEqual(1, len(ops))
+        self.assertEqual("compare", ops[0].action)
+        self.assertEqual(["A", "B"], ops[0].compare_networks)
+        self.assertEqual(["S21"], ops[0].params)
+
+    def test_multi_port_params_are_preserved(self):
+        ops = nl_parser.parse("画 S10_9 和 S2_1", ["fixture"])
+
+        self.assertEqual(["S10_9", "S2_1"], ops[0].params)
+
+    def test_plot_after_cascade_keeps_empty_target(self):
+        ops = nl_parser.parse("级联 A 和 B，然后画 S21", ["A", "B"])
+
+        self.assertEqual(["cascade", "plot"], [op.action for op in ops])
+        self.assertEqual("A", ops[0].target)
+        self.assertEqual("B", ops[0].cascade_with)
+        self.assertFalse(ops[1].target)
+
+
+class TestRfCoreRegressions(unittest.TestCase):
+    def test_slice_freq_accepts_numeric_and_string_ranges(self):
+        ntwk = make_network()
+
+        numeric = sp.slice_freq(ntwk, 1.2e9, 1.6e9)
+        string = sp.slice_freq(ntwk, "1.2-1.6ghz")
+
+        self.assertEqual(list(numeric.f), list(string.f))
+        self.assertEqual(2, len(string.f))
+
+    def test_slice_freq_rejects_reversed_or_empty_ranges_and_keeps_original(self):
+        ntwk = make_network()
+        original_f = ntwk.f.copy()
+
+        with self.assertRaises(ValueError):
+            sp.slice_freq(ntwk, "2-1ghz")
+        with self.assertRaises(ValueError):
+            sp.slice_freq(ntwk, "5-6ghz")
+
+        np.testing.assert_array_equal(original_f, ntwk.f)
+        self.assertEqual(5, len(ntwk.f))
+
+    def test_renormalize_returns_new_network_without_mutating_original(self):
+        ntwk = make_network()
+
+        result = sp.renormalize(ntwk, 75)
+
+        self.assertIsInstance(result, rf.Network)
+        self.assertIsNot(result, ntwk)
+        self.assertTrue(np.allclose(result.z0, 75))
+        self.assertTrue(np.allclose(ntwk.z0, 50))
+
+    def test_parse_network_params_supports_large_ports_and_rejects_ambiguity(self):
+        self.assertEqual(("S", 9, 8), sp.parse_network_param("S10_9", 12))
+        self.assertEqual(("Z", 9, 9), sp.parse_network_param("Z10_10", 12))
+        self.assertEqual(9, sp.parse_vswr_param("VSWR10", 12))
+        self.assertEqual([0], sp._parse_vswr_params(make_network(), ["S11"]))
+
+        with self.assertRaises(ValueError):
+            sp.parse_network_param("S1010", 12)
+        with self.assertRaises(ValueError):
+            sp.parse_network_param("S3_1", 2)
 
 
 class TestExportsAndApi(unittest.TestCase):
@@ -125,6 +206,78 @@ class TestExportsAndApi(unittest.TestCase):
         payload = resp.get_json()
         self.assertIn("<html", payload["html"])
         self.assertEqual("Fixture", payload["title"])
+
+    def test_chart_html_escapes_title_and_header(self):
+        register_network(self.ntwk)
+        malicious = "<script>alert(1)</script>"
+
+        with app_module.app.test_client() as client:
+            resp = client.post("/api/chart/html", json={
+                "session": "test",
+                "type": "db",
+                "title": malicious,
+                "networks": [{"name": "fixture", "params": ["S21"]}],
+            })
+
+        self.assertEqual(200, resp.status_code)
+        html = resp.get_json()["html"]
+        self.assertIn("&lt;script&gt;alert(1)&lt;/script&gt;", html)
+        self.assertNotIn("<h2><script>", html)
+        self.assertNotIn("</script><script>", html)
+
+    def test_chart_rejects_invalid_param_and_frequency_with_400(self):
+        register_network(self.ntwk)
+
+        with app_module.app.test_client() as client:
+            bad_param = client.post("/api/chart", json={
+                "session": "test",
+                "type": "db",
+                "networks": [{"name": "fixture", "params": ["S1010"]}],
+            })
+            bad_freq = client.post("/api/chart", json={
+                "session": "test",
+                "type": "db",
+                "freq_range": ["5ghz", "6ghz"],
+                "networks": [{"name": "fixture", "params": ["S21"]}],
+            })
+
+        self.assertEqual(400, bad_param.status_code)
+        self.assertEqual(400, bad_freq.status_code)
+
+    def test_compare_rejects_invalid_param_and_frequency_with_400(self):
+        register_networks({"A": make_network("A"), "B": make_network("B")})
+
+        with app_module.app.test_client() as client:
+            bad_param = client.post("/api/compare", json={
+                "session": "test",
+                "networks": ["A", "B"],
+                "params": ["S1010"],
+            })
+            bad_freq = client.post("/api/compare", json={
+                "session": "test",
+                "networks": ["A", "B"],
+                "params": ["S21"],
+                "freq_range": ["5ghz", "6ghz"],
+            })
+
+        self.assertEqual(400, bad_param.status_code)
+        self.assertEqual(400, bad_freq.status_code)
+
+    def test_chat_plot_after_cascade_uses_cascade_result(self):
+        register_networks({"A": make_network("A"), "B": make_network("B")})
+
+        with app_module.app.test_client() as client:
+            resp = client.post("/api/chat", json={
+                "session": "test",
+                "text": "级联 A 和 B，然后画 S21",
+            })
+
+        self.assertEqual(200, resp.status_code)
+        payload = resp.get_json()
+        self.assertTrue(payload["handled"])
+        self.assertEqual(["text", "chart"], [r["type"] for r in payload["results"]])
+        self.assertIn("A+B", app_module.sessions["test"]["networks"])
+        self.assertTrue(payload["results"][1]["title"].startswith("A+B"))
 
 
 class TestPlotCompatibility(unittest.TestCase):
@@ -220,6 +373,40 @@ class TestNetworkMetadataApi(unittest.TestCase):
         self.assertEqual("Magnitude |Z| (ohm)", fig["layout"]["yaxis"]["title"])
         self.assertEqual("fixture Z1_1", fig["data"][0]["name"])
 
+    def test_large_port_file_registers_metadata_without_eager_load(self):
+        app_module.sessions.clear()
+        fd, path = tempfile.mkstemp(suffix=".s8p")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write("# GHZ S RI R 50\n")
+                f.write("1.0 0 0\n")
+                f.write("2.0 0 0\n")
+
+            info = app_module._register_path("large", path, name="big")
+
+            self.assertFalse(info["loaded"])
+            self.assertEqual(8, info["nports"])
+            self.assertEqual(64, info["total_params"])
+            self.assertIsNone(app_module.sessions["large"]["networks"]["big"]["_ntwk"])
+
+            with app_module.app.test_client() as client:
+                resp = client.get("/api/networks/big/status?session=large")
+
+            self.assertEqual(200, resp.status_code)
+            self.assertFalse(resp.get_json()["loaded"])
+        finally:
+            if os.path.exists(path):
+                os.unlink(path)
+
+    def test_dashboard_does_not_use_inner_html_for_user_strings(self):
+        dashboard = os.path.join(ROOT, "scripts", "templates", "dashboard.html")
+
+        with open(dashboard, "r", encoding="utf-8") as f:
+            text = f.read()
+
+        self.assertNotIn("innerHTML", text)
+        self.assertNotIn("insertAdjacentHTML", text)
+
 
 class TestCodeValidator(unittest.TestCase):
     def test_getattr_os_system_is_rejected(self):
@@ -239,6 +426,33 @@ class TestCodeValidator(unittest.TestCase):
 
         self.assertFalse(ok)
         self.assertIn("os.system", msg)
+
+    def test_pathlib_import_is_rejected(self):
+        ok, msg = code_agent.validate_code("from pathlib import Path\nfig = None")
+
+        self.assertFalse(ok)
+        self.assertIn("pathlib", msg)
+
+    def test_path_file_methods_are_rejected(self):
+        ok_read, msg_read = code_agent.validate_code("Path('x').read_text()\nfig = None")
+        ok_write, msg_write = code_agent.validate_code("Path('x').write_text('x')\nfig = None")
+
+        self.assertFalse(ok_read)
+        self.assertIn("read_text", msg_read)
+        self.assertFalse(ok_write)
+        self.assertIn("write_text", msg_write)
+
+    def test_network_constructors_are_rejected(self):
+        cases = [
+            "rf.Network('x.s2p')\nfig = None",
+            "skrf.Network('x.s2p')\nfig = None",
+            "from skrf import Network\nfig = None",
+        ]
+        for code in cases:
+            with self.subTest(code=code):
+                ok, msg = code_agent.validate_code(code)
+                self.assertFalse(ok)
+                self.assertIn("Network", msg)
 
 
 class TestApiGraphDependency(unittest.TestCase):

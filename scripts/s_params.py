@@ -9,6 +9,7 @@ import io
 import os
 import base64
 import tempfile
+import re
 from typing import Optional, Union, List, Tuple
 
 import numpy as np
@@ -239,17 +240,22 @@ def slice_freq(
         slice_freq(ntwk, 2e9, 4e9)            # 两个数值 (Hz)
         slice_freq(ntwk, '2GHz', '4GHz')      # 两个字符串
     """
-    if stop is None and isinstance(start, str) and "-" in start:
-        # 范围字符串解析：'2-4ghz', '1GHz-6GHz'
-        parts = start.split("-", 1)
-        start = _parse_freq_str(parts[0])
-        stop = _parse_freq_str(parts[1])
-    else:
-        if isinstance(start, str):
-            start = _parse_freq_str(start)
-        if isinstance(stop, str):
-            stop = _parse_freq_str(stop)
-    return ntwk[f"{start}-{stop}"]
+    start_hz, stop_hz = parse_freq_range(start, stop)
+    if not np.isfinite(start_hz):
+        raise ValueError("起始频率必须是有限值")
+    if not np.isinf(stop_hz) and not np.isfinite(stop_hz):
+        raise ValueError("终止频率必须是有限值或 inf")
+    if start_hz >= stop_hz:
+        raise ValueError(f"频率范围无效: {start_hz:g} Hz >= {stop_hz:g} Hz")
+
+    freq = np.asarray(ntwk.f)
+    mask = (freq >= start_hz) & (freq <= stop_hz)
+    if not np.any(mask):
+        raise ValueError(
+            f"频率范围 {start_hz/1e9:.6g}-{stop_hz/1e9:.6g} GHz 与网络范围 "
+            f"{freq[0]/1e9:.6g}-{freq[-1]/1e9:.6g} GHz 无交集"
+        )
+    return ntwk[mask]
 
 
 def interpolate_to(ntwk: rf.Network, freqs: np.ndarray) -> rf.Network:
@@ -259,8 +265,13 @@ def interpolate_to(ntwk: rf.Network, freqs: np.ndarray) -> rf.Network:
 
 
 def renormalize(ntwk: rf.Network, z0: float) -> rf.Network:
-    """重归一化到不同参考阻抗。"""
-    return ntwk.renormalize(z0)
+    """返回重归一化到不同参考阻抗的新 Network，不修改原对象。"""
+    z0_value = float(z0)
+    if not np.isfinite(z0_value) or z0_value <= 0:
+        raise ValueError(f"参考阻抗必须是正有限数: {z0}")
+    result = ntwk.copy()
+    result.renormalize(z0_value)
+    return result
 
 
 def cascade_chain(networks: List[rf.Network]) -> rf.Network:
@@ -413,20 +424,73 @@ def compute_diff_stats(
     }
 
 
+_FREQ_TOKEN_RE = re.compile(
+    r"^\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?)\s*([gmk]?hz|[gmk])?\s*$",
+    re.IGNORECASE,
+)
+
+
+def parse_freq_range(
+    start: Union[float, str, Tuple[Union[float, str], Union[float, str]], List[Union[float, str]]],
+    stop: Optional[Union[float, str]] = None,
+) -> Tuple[float, float]:
+    """
+    标准化频率范围为 Hz。
+
+    支持：
+      - parse_freq_range("2-4ghz")
+      - parse_freq_range("2GHz", "4GHz")
+      - parse_freq_range(2e9, 4e9)
+      - parse_freq_range([2e9, 4e9])
+    """
+    if stop is None and isinstance(start, (tuple, list)) and len(start) == 2:
+        start, stop = start
+    elif stop is None and isinstance(start, str):
+        text = start.strip()
+        parts = re.split(r"\s*(?:-|到|至|~|,|，)\s*", text, maxsplit=1)
+        if len(parts) == 2:
+            start, stop = parts
+        else:
+            raise ValueError(f"无法解析频率范围: {start}")
+
+    if stop is None:
+        raise ValueError("请提供起始和终止频率")
+
+    return _parse_freq_value(start), _parse_freq_value(stop)
+
+
+def _parse_freq_value(value: Union[float, str]) -> float:
+    """解析 '2GHz', '2.4g', '500mhz', '2e9' 为 Hz 数值。"""
+    if isinstance(value, (int, float, np.integer, np.floating)):
+        return float(value)
+
+    s = str(value).strip().lower()
+    if s in ("inf", "+inf", "infinity", "+infinity"):
+        return float("inf")
+
+    m = _FREQ_TOKEN_RE.match(s)
+    if not m:
+        raise ValueError(f"无法解析频率: {value}")
+
+    number = float(m.group(1))
+    unit = (m.group(2) or "").lower()
+    if unit in ("ghz", "g"):
+        return number * 1e9
+    if unit in ("mhz", "m"):
+        return number * 1e6
+    if unit in ("khz", "k"):
+        return number * 1e3
+    if unit == "hz":
+        return number
+    # 纯数字字符串保留历史口语语义：默认 GHz；科学计数法默认 Hz。
+    if "e" in s:
+        return number
+    return number * 1e9
+
+
 def _parse_freq_str(s: str) -> float:
-    """解析 '2GHz', '2.4g', '500mhz', '500M' 为 Hz 数值。"""
-    s = s.strip().lower().replace(" ", "")
-    if s.endswith("ghz") or s.endswith("g"):
-        return float(s.rstrip("ghz").rstrip("g")) * 1e9
-    elif s.endswith("mhz") or s.endswith("m"):
-        return float(s.rstrip("mhz").rstrip("m")) * 1e6
-    elif s.endswith("khz") or s.endswith("k"):
-        return float(s.rstrip("khz").rstrip("k")) * 1e3
-    elif s.endswith("hz"):
-        return float(s.rstrip("hz"))
-    else:
-        # 默认按 GHz 处理纯数字
-        return float(s) * 1e9
+    """兼容旧内部调用，解析单个频率值为 Hz。"""
+    return _parse_freq_value(s)
 
 
 # ─── 5. 交互式画图 (Plotly) ────────────────────────────────────────────
@@ -448,6 +512,68 @@ def _param_label(m: int, n: int, ntwk_name: str = "") -> str:
     return s
 
 
+_PARAM_UNDERSCORE_RE = re.compile(r"^([SZY])(\d+)_(\d+)$", re.IGNORECASE)
+_PARAM_LEGACY_RE = re.compile(r"^([SZY])([1-9])([1-9])$", re.IGNORECASE)
+_PARAM_AMBIGUOUS_RE = re.compile(r"^([SZY])\d{3,}$", re.IGNORECASE)
+_VSWR_RE = re.compile(r"^VSWR(\d+)$", re.IGNORECASE)
+
+
+def parse_network_param(param, nports: int = None, allowed_prefixes=("S", "Z", "Y")) -> Tuple[str, int, int]:
+    """
+    解析网络参数名，返回 (prefix, m, n)，m/n 为 0-based。
+
+    支持 S2_1、Z64_64、Y10_9；旧式 S21 仅兼容个位端口。
+    S1010 这类无下划线多位端口写法会被拒绝，避免歧义。
+    """
+    if isinstance(param, str):
+        p = param.strip().upper()
+        m = _PARAM_UNDERSCORE_RE.match(p)
+        if not m:
+            m = _PARAM_LEGACY_RE.match(p)
+        if not m:
+            if _PARAM_AMBIGUOUS_RE.match(p):
+                raise ValueError(f"参数 '{param}' 有歧义，请使用下划线格式，例如 S10_10")
+            raise ValueError(f"无法解析参数: {param}")
+        prefix, row, col = m.group(1).upper(), int(m.group(2)), int(m.group(3))
+    elif isinstance(param, (tuple, list)) and len(param) == 2:
+        prefix, row, col = "S", int(param[0]) + 1, int(param[1]) + 1
+    else:
+        raise ValueError(f"无法解析参数: {param}")
+
+    allowed = {p.upper() for p in allowed_prefixes}
+    if prefix not in allowed:
+        raise ValueError(f"参数类型 {prefix} 不适用于当前操作")
+
+    row_idx, col_idx = row - 1, col - 1
+    _validate_port_index(row_idx, nports, param)
+    _validate_port_index(col_idx, nports, param)
+    return prefix, row_idx, col_idx
+
+
+def parse_vswr_param(param, nports: int = None) -> int:
+    """解析 VSWR 端口，返回 0-based 端口索引。"""
+    if isinstance(param, str):
+        p = param.strip().upper()
+        m = _VSWR_RE.match(p)
+        if m:
+            idx = int(m.group(1)) - 1
+        else:
+            idx = int(p) - 1 if int(p) > 0 else int(p)
+    elif isinstance(param, (int, float, np.integer, np.floating)):
+        idx = int(param)
+    else:
+        raise ValueError(f"无法解析 VSWR 端口: {param}")
+    _validate_port_index(idx, nports, param)
+    return idx
+
+
+def _validate_port_index(idx: int, nports: int, original):
+    if idx < 0:
+        raise ValueError(f"端口编号必须从 1 开始: {original}")
+    if nports is not None and idx >= nports:
+        raise ValueError(f"端口 {idx + 1} 超出范围，当前网络只有 {nports} 个端口")
+
+
 def _parse_params(ntwk: rf.Network, params) -> List[Tuple[int, int]]:
     """
     标准化 params 参数。支持：
@@ -464,15 +590,8 @@ def _parse_params(ntwk: rf.Network, params) -> List[Tuple[int, int]]:
     result = []
     items = params if isinstance(params, list) else [params]
     for p in items:
-        if isinstance(p, str):
-            p = p.strip().upper()
-            if "_" in p:
-                parts = p[1:].split("_", 1)
-                result.append((int(parts[0]) - 1, int(parts[1]) - 1))
-            elif p.startswith("S") and len(p) == 3:
-                result.append((int(p[1]) - 1, int(p[2]) - 1))
-        elif isinstance(p, (tuple, list)) and len(p) == 2:
-            result.append((int(p[0]), int(p[1])))
+        prefix, m, n = parse_network_param(p, ntwk.nports, allowed_prefixes=("S",))
+        result.append((m, n))
     return result
 
 
@@ -483,14 +602,11 @@ def _parse_vswr_params(ntwk: rf.Network, ports) -> List[int]:
     items = ports if isinstance(ports, list) else [ports]
     result = []
     for p in items:
-        if isinstance(p, str):
-            p = p.strip().upper()
-            if p.startswith("VSWR"):
-                result.append(int(p[4:]) - 1)
-            else:
-                result.append(int(p) - 1 if int(p) > 0 else int(p))
-        elif isinstance(p, (int, float)):
-            result.append(int(p))
+        if isinstance(p, str) and p.strip().upper().startswith("S"):
+            _, m, _ = parse_network_param(p, ntwk.nports, allowed_prefixes=("S",))
+            result.append(m)
+        else:
+            result.append(parse_vswr_param(p, ntwk.nports))
     return result
 
 

@@ -35,14 +35,14 @@
 
 ```bash
 # 1. 安装依赖
-pip install -r requirements.txt
+pip install -r scripts/requirements.txt
 
 # 2. 配置 LLM
-cp config.example.json config.json
-# 编辑 config.json，填入 api_key（或设环境变量 DEEPSEEK_API_KEY）
+cp scripts/config.example.json scripts/config.json
+# 编辑 scripts/config.json，填入 api_key（或设环境变量 DEEPSEEK_API_KEY）
 
 # 3. 启动
-python app.py
+python scripts/app.py
 # → 浏览器打开 http://localhost:5050
 ```
 

@@ -45,9 +45,6 @@ ALLOWED_IMPORTS = {
     "collections",
     "dataclasses",
     "typing",
-    "pathlib",
-    "io",
-    "tempfile",
     "copy",
 }
 
@@ -64,9 +61,6 @@ ALLOWED_PREFIXES = [
     "collections",
     "dataclasses",
     "typing",
-    "pathlib",
-    "io",
-    "tempfile",
     "copy",
     "re",
     "string",
@@ -78,6 +72,12 @@ FORBIDDEN_BUILTINS = {
     "eval", "exec", "compile", "__import__", "open",
     "breakpoint", "input", "getattr", "setattr", "delattr",
     "globals", "locals", "vars",
+}
+
+FORBIDDEN_FILE_METHODS = {
+    "read_text", "write_text", "read_bytes", "write_bytes", "open",
+    "mkdir", "unlink", "rename", "replace", "rmdir", "glob", "rglob",
+    "iterdir", "touch", "symlink_to", "hardlink_to",
 }
 
 # 无条件物理删除的危险调用（在 AST 校验前用正则移除）
@@ -210,6 +210,10 @@ class CodeValidator(ast.NodeVisitor):
         top = module.split(".")[0] if module else node.names[0].name
         if not self._is_allowed(top) and not self._is_allowed(module):
             self.errors.append(f"禁止 import from: '{module}'（仅允许 skrf, plotly, numpy 等）")
+        if module == "skrf":
+            for alias in node.names:
+                if alias.name == "Network":
+                    self.errors.append("禁止 import: skrf.Network（请使用 _nets 中已加载的网络）")
         self.generic_visit(node)
 
     def visit_Call(self, node):
@@ -217,14 +221,14 @@ class CodeValidator(ast.NodeVisitor):
         if isinstance(node.func, ast.Name):
             if node.func.id in FORBIDDEN_BUILTINS:
                 self.errors.append(f"禁止调用: {node.func.id}()")
-        # 检查 open() 的文件扩展名
-        if isinstance(node.func, ast.Name) and node.func.id == "open":
-            if node.args:
-                first = node.args[0]
-                if isinstance(first, ast.Constant) and isinstance(first.value, str):
-                    ext = os.path.splitext(first.value)[1].lower()
-                    if ext not in ALLOWED_OPEN_EXTENSIONS:
-                        self.warnings.append(f"open() 写入不可识别扩展名: '{ext}'")
+            if node.func.id == "Network":
+                self.errors.append("禁止调用: Network()（请使用 _nets 中已加载的网络）")
+        if isinstance(node.func, ast.Attribute):
+            full = self._get_attr_chain(node.func)
+            if full in ("rf.Network", "skrf.Network"):
+                self.errors.append("禁止调用: rf.Network()（请使用 _nets 中已加载的网络）")
+            if node.func.attr in FORBIDDEN_FILE_METHODS:
+                self.errors.append(f"禁止调用文件方法: {node.func.attr}()")
         self.generic_visit(node)
 
     def visit_Attribute(self, node):

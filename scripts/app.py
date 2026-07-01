@@ -11,6 +11,7 @@ import io
 import json
 import tempfile
 import traceback
+import html
 from pathlib import Path
 
 import numpy as np
@@ -40,6 +41,8 @@ app.config["MAX_CONTENT_LENGTH"] = 500 * 1024 * 1024  # 500 MB 上传上限（�
 
 # 会话级存储：上传文件的解析结果
 sessions = {}  # { session_id: { "networks": {name: Network}, "freq_unit": "ghz" } }
+EAGER_LOAD_MAX_PORTS = 7
+EAGER_LOAD_MAX_BYTES = 25 * 1024 * 1024
 
 # ──────────────────────────────────────────────────────────────
 #  页面路由
@@ -224,27 +227,25 @@ def chat():
     text = data.get("text", "").strip()
 
     if not text:
-        return jsonify({"reply": "请说点什么吧 😊", "results": []})
+        return jsonify({"reply": "请说点什么吧 😊", "results": [], "handled": False})
 
     # 列出已有文件
     available = list(sessions.get(session_id, {}).get("networks", {}).keys())
 
-    # ── 解析自然语言：LLM 优先，规则 fallback ──
+    # ── 解析自然语言：规则优先，LLM 作为兜底 ──
     ops = None
     parse_mode = "rule"
 
-    if llm_chat.is_available():
+    try:
+        ops = nl_parser.parse(text, available)
+    except Exception as e:
+        return jsonify({"reply": f"解析失败: {str(e)}", "results": [], "handled": False})
+
+    if not ops and llm_chat.is_available():
         llm_ops = llm_chat.parse_with_llm(text, available)
         if llm_ops:
             ops = llm_chat.ops_to_nl_parser_format(llm_ops)
             parse_mode = "llm"
-
-    if ops is None:
-        try:
-            ops = nl_parser.parse(text, available)
-        except Exception as e:
-            return jsonify({"reply": f"解析失败: {str(e)}", "results": []})
-        parse_mode = "rule"
 
     if not ops:
         return jsonify({
@@ -253,7 +254,8 @@ def chat():
                      "• \"画 S11 和 S21 的 dB 图\"\n"
                      "• \"级联 A 和 B，画 S21 Smith 圆图\"\n"
                      "• \"导出 S21 为 CSV\"",
-            "results": []
+            "results": [],
+            "handled": False,
         })
 
     # ── 初始化 session ──
@@ -289,6 +291,7 @@ def chat():
         "results": results,
         "ops_debug": nl_parser.format_ops(ops),
         "parse_mode": parse_mode,
+        "handled": True,
     })
 
 
@@ -321,22 +324,20 @@ def _execute_op(op, session_id: str, last_ntwk_name: str = None) -> dict:
         if candidates:
             op.target = candidates[0]
 
-        ntwk = sp.load_ntwk(op.target)
         name = os.path.splitext(os.path.basename(op.target))[0]
-        ses["networks"][name] = {
-            "path": op.target,
-            "nports": ntwk.nports,
-            "f_min": float(ntwk.f[0]),
-            "f_max": float(ntwk.f[-1]),
-            "npoints": len(ntwk.f),
-            "params": sp.list_params(ntwk),
-            **_inspect_network(ntwk),
-        }
-        info_str = sp.info(ntwk)
+        info = _register_path(session_id, op.target, name=name, dedup=True)
+        ntwk = _get_network(session_id, info["name"]) if info.get("loaded") else None
+        if ntwk is not None:
+            info_str = sp.info(ntwk)
+        else:
+            info_str = (
+                f"{info['nports']}端口, {info['f_min']/1e9:.3f}-{info['f_max']/1e9:.3f} GHz, "
+                f"{info['npoints']}点 (metadata only, 按需加载)"
+            )
         return {
             "type": "text",
-            "message": f"✅ 已加载 **{name}**\n{info_str}",
-            "ntwk_name": name,
+            "message": f"✅ 已加载 **{info['name']}**\n{info_str}",
+            "ntwk_name": info["name"],
         }
 
     # ── INFO ──
@@ -367,15 +368,7 @@ def _execute_op(op, session_id: str, last_ntwk_name: str = None) -> dict:
         result_name = op.result_name or f"{_basename(name_a)}+{_basename(name_b)}"
         tmp_path = tempfile.mktemp(suffix=f".s{ntwk_result.nports}p")
         ntwk_result.write_touchstone(tmp_path)
-        ses["networks"][result_name] = {
-            "path": tmp_path,
-            "nports": ntwk_result.nports,
-            "f_min": float(ntwk_result.f[0]),
-            "f_max": float(ntwk_result.f[-1]),
-            "npoints": len(ntwk_result.f),
-            "params": sp.list_params(ntwk_result),
-            **_inspect_network(ntwk_result),
-        }
+        _store_network(session_id, result_name, ntwk_result, tmp_path)
         return {
             "type": "text",
             "message": f"🔗 级联完成 → **{result_name}** ({ntwk_result.nports}端口)",
@@ -396,15 +389,7 @@ def _execute_op(op, session_id: str, last_ntwk_name: str = None) -> dict:
         sliced_name = name
         tmp_path = tempfile.mktemp(suffix=f".s{sliced.nports}p")
         sliced.write_touchstone(tmp_path)
-        ses["networks"][sliced_name] = {
-            "path": tmp_path,
-            "nports": sliced.nports,
-            "f_min": float(sliced.f[0]),
-            "f_max": float(sliced.f[-1]),
-            "npoints": len(sliced.f),
-            "params": sp.list_params(sliced),
-            **_inspect_network(sliced),
-        }
+        _store_network(session_id, sliced_name, sliced, tmp_path)
         return {
             "type": "text",
             "message": f"✂️ 已截取 {op.freq_range[0]/1e9:.2f}–{op.freq_range[1]/1e9:.2f} GHz ({len(sliced.f)} 点)",
@@ -437,14 +422,7 @@ def _execute_op(op, session_id: str, last_ntwk_name: str = None) -> dict:
                                         title=op.title or f"{_basename(name)} Dual Y-Axis")
         # VSWR 处理
         elif chart_type == "vswr":
-            ports = []
-            for p in (params or [f"S11"]):
-                if isinstance(p, str) and p.upper().startswith("VSWR"):
-                    ports.append(int(p[4:]) - 1)
-                elif isinstance(p, str) and p.upper().startswith("S"):
-                    ports.append(int(p[1]) - 1)
-            if not ports:
-                ports = [0]
+            ports = sp._parse_vswr_params(ntwk, params or ["VSWR1"])
             fig = sp.plot_vswr(ntwk, ports, title=op.title or f"{_basename(name)} VSWR")
         else:
             fig = _dispatch_plot(ntwk, params, chart_type, op.title, name)
@@ -527,15 +505,7 @@ def _execute_op(op, session_id: str, last_ntwk_name: str = None) -> dict:
         result_name = op.result_name or "_".join(chain_names)
         tmp_path = tempfile.mktemp(suffix=f".s{result.nports}p")
         result.write_touchstone(tmp_path)
-        ses["networks"][result_name] = {
-            "path": tmp_path,
-            "nports": result.nports,
-            "f_min": float(result.f[0]),
-            "f_max": float(result.f[-1]),
-            "npoints": len(result.f),
-            "params": sp.list_params(result),
-            **_inspect_network(result),
-        }
+        _store_network(session_id, result_name, result, tmp_path)
         return {
             "type": "text",
             "message": f"🔗 链式级联完成: {' → '.join(chain_names)} → **{result_name}** ({result.nports}端口)",
@@ -559,18 +529,8 @@ def _execute_op(op, session_id: str, last_ntwk_name: str = None) -> dict:
         loaded = []
         for path in matches:
             try:
-                ntwk = sp.load_ntwk(path)
-                name = os.path.splitext(os.path.basename(path))[0]
-                ses["networks"][name] = {
-                    "path": path,
-                    "nports": ntwk.nports,
-                    "f_min": float(ntwk.f[0]),
-                    "f_max": float(ntwk.f[-1]),
-                    "npoints": len(ntwk.f),
-                    "params": sp.list_params(ntwk),
-                    **_inspect_network(ntwk),
-                }
-                loaded.append(name)
+                info = _register_path(session_id, path, name=os.path.splitext(os.path.basename(path))[0], dedup=True)
+                loaded.append(info["name"])
             except Exception as e:
                 pass
         return {
@@ -606,11 +566,8 @@ def _execute_op(op, session_id: str, last_ntwk_name: str = None) -> dict:
         params = op.params if op.params else ["S21"]
         parsed_params = []
         for ps in params:
-            ps = str(ps).strip().upper()
-            if ps.startswith("S") and len(ps) >= 3:
-                m = int(ps[1]) - 1
-                n = int(ps[2]) - 1
-                parsed_params.append((m, n))
+            _, m, n = sp.parse_network_param(ps, min(n.nports for n in networks), allowed_prefixes=("S",))
+            parsed_params.append((m, n))
         if not parsed_params:
             parsed_params = [(1, 0)]
         ref_idx = 0
@@ -663,6 +620,103 @@ def _basename(path_or_name: str) -> str:
     return os.path.splitext(os.path.basename(path_or_name))[0]
 
 
+def _session(session_id: str) -> dict:
+    return sessions.setdefault(session_id, {"networks": {}})
+
+
+def _param_names(nports: int) -> list:
+    return [f"S{m+1}_{n+1}" for m in range(nports) for n in range(nports)]
+
+
+def _entry_response(name: str, entry: dict) -> dict:
+    response = {
+        "ok": True,
+        "name": name,
+        "nports": entry.get("nports", 0),
+        "f_min": float(entry.get("f_min", 0.0)),
+        "f_max": float(entry.get("f_max", 0.0)),
+        "f_unit": entry.get("freq_unit", "ghz"),
+        "npoints": entry.get("npoints", 0),
+        "loaded": entry.get("_ntwk") is not None,
+        "network_kind": entry.get("network_kind", "unknown"),
+        "port_names": entry.get("port_names", []),
+        "port_pairs": entry.get("port_pairs", []),
+        "quick_actions": entry.get("quick_actions", []),
+    }
+    params = entry.get("params", [])
+    response["params"] = params if len(params) <= 200 else params[:200]
+    response["params_truncated"] = len(params) > 200
+    response["total_params"] = len(params)
+    return response
+
+
+def _entry_from_network(path: str, ntwk) -> dict:
+    return {
+        "path": path,
+        "_ntwk": ntwk,
+        "nports": ntwk.nports,
+        "f_min": float(ntwk.f[0]),
+        "f_max": float(ntwk.f[-1]),
+        "npoints": len(ntwk.f),
+        "params": sp.list_params(ntwk),
+        **_inspect_network(ntwk),
+    }
+
+
+def _entry_from_header(path: str, header: dict) -> dict:
+    nports = int(header["nports"])
+    return {
+        "path": path,
+        "_ntwk": None,
+        "nports": nports,
+        "f_min": float(header["f_min"]),
+        "f_max": float(header["f_max"]),
+        "npoints": int(header["npoints"]),
+        "freq_unit": header.get("freq_unit", "ghz"),
+        "params": _param_names(nports),
+        "network_kind": "unknown",
+        "port_names": [f"Port{i + 1}" for i in range(nports)],
+        "port_pairs": [],
+        "quick_actions": [],
+    }
+
+
+def _should_lazy_load(path: str, header: dict) -> bool:
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        size = 0
+    return int(header.get("nports", 0)) >= 8 or size > EAGER_LOAD_MAX_BYTES
+
+
+def _register_path(session_id: str, path: str, name: str = None, dedup: bool = False) -> dict:
+    ses = _session(session_id)
+    networks = ses["networks"]
+    name = name or os.path.splitext(os.path.basename(path))[0]
+    if dedup:
+        name = _dedup_name(networks, name)
+
+    header = _read_touchstone_header(path)
+    if header and _should_lazy_load(path, header):
+        entry = _entry_from_header(path, header)
+    else:
+        ntwk = rf.Network(path)
+        entry = _entry_from_network(path, ntwk)
+        ses["freq_unit"] = _guess_freq_unit(ntwk)
+
+    networks[name] = entry
+    return _entry_response(name, entry)
+
+
+def _store_network(session_id: str, name: str, ntwk, path: str, dedup: bool = False) -> dict:
+    ses = _session(session_id)
+    if dedup:
+        name = _dedup_name(ses["networks"], name)
+    entry = _entry_from_network(path, ntwk)
+    ses["networks"][name] = entry
+    return _entry_response(name, entry)
+
+
 # ──────────────────────────────────────────────────────────────
 #  文件上传 API
 # ──────────────────────────────────────────────────────────────
@@ -686,44 +740,7 @@ def upload():
     try:
         name = Path(file.filename).stem
         session_id = request.form.get("session", "default")
-
-        # 使用 skrf 直接解析（保证端口数/频率正确）
-        ntwk = rf.Network(tmp_path)
-        if session_id not in sessions:
-            sessions[session_id] = {"networks": {}}
-
-        nports = ntwk.nports
-        all_params = [f"S{m+1}_{n+1}" for m in range(nports) for n in range(nports)]
-
-        sessions[session_id]["networks"][name] = {
-            "path": tmp_path,
-            "_ntwk": ntwk,
-            "nports": nports,
-            "f_min": float(ntwk.f[0]),
-            "f_max": float(ntwk.f[-1]),
-            "npoints": len(ntwk.f),
-            "params": all_params,
-            **_inspect_network(ntwk),
-        }
-
-        freq_unit = _guess_freq_unit(ntwk)
-        sessions[session_id]["freq_unit"] = freq_unit
-
-        display_params = all_params if len(all_params) <= 200 else all_params[:200]
-
-        return jsonify({
-            "ok": True,
-            "name": name,
-            "nports": nports,
-            "f_min": float(ntwk.f[0]),
-            "f_max": float(ntwk.f[-1]),
-            "f_unit": freq_unit,
-            "npoints": len(ntwk.f),
-            "params": display_params,
-            "params_truncated": len(all_params) > 200,
-            "total_params": len(all_params),
-            **_inspect_network(ntwk),
-        })
+        return jsonify(_register_path(session_id, tmp_path, name=name))
     except Exception as e:
         os.unlink(tmp_path)
         traceback.print_exc()
@@ -753,30 +770,7 @@ def upload_batch():
             file.save(tmp.name)
             tmp_path = tmp.name
         try:
-            ntwk = rf.Network(tmp_path)
-            name = Path(file.filename).stem
-            nports = ntwk.nports
-            all_params = [f"S{m+1}_{n+1}" for m in range(nports) for n in range(nports)]
-            sessions[session_id]["networks"][name] = {
-                "path": tmp_path,
-                "_ntwk": ntwk,
-                "nports": nports,
-                "f_min": float(ntwk.f[0]),
-                "f_max": float(ntwk.f[-1]),
-                "npoints": len(ntwk.f),
-                "params": all_params,
-                **_inspect_network(ntwk),
-            }
-            results.append({
-                "ok": True,
-                "name": name,
-                "nports": nports,
-                "f_min": float(ntwk.f[0]),
-                "f_max": float(ntwk.f[-1]),
-                "npoints": len(ntwk.f),
-                "params": all_params[:200],
-                **_inspect_network(ntwk),
-            })
+            results.append(_register_path(session_id, tmp_path, name=Path(file.filename).stem, dedup=True))
         except Exception as e:
             os.unlink(tmp_path)
             results.append({"ok": False, "name": file.filename, "error": str(e)})
@@ -829,31 +823,7 @@ def _load_local_dir(dir_path, session_id):
     for fname in files:
         fpath = os.path.join(dir_path, fname)
         try:
-            ntwk = rf.Network(fpath)
-            name = os.path.splitext(fname)[0]
-            name = _dedup_name(sessions[session_id]["networks"], name)
-            nports = ntwk.nports
-            all_params = [f"S{m+1}_{n+1}" for m in range(nports) for n in range(nports)]
-            sessions[session_id]["networks"][name] = {
-                "path": fpath,
-                "_ntwk": ntwk,
-                "nports": nports,
-                "f_min": float(ntwk.f[0]),
-                "f_max": float(ntwk.f[-1]),
-                "npoints": len(ntwk.f),
-                "params": all_params,
-                **_inspect_network(ntwk),
-            }
-            results.append({
-                "ok": True,
-                "name": name,
-                "nports": nports,
-                "f_min": float(ntwk.f[0]),
-                "f_max": float(ntwk.f[-1]),
-                "npoints": len(ntwk.f),
-                "params": all_params[:200],
-                **_inspect_network(ntwk),
-            })
+            results.append(_register_path(session_id, fpath, name=os.path.splitext(fname)[0], dedup=True))
         except Exception as e:
             results.append({"ok": False, "name": fname, "error": str(e)})
 
@@ -869,41 +839,9 @@ def _load_local_dir(dir_path, session_id):
 def _load_local_file(local_path, session_id, name_override=None):
     """加载单个本地 .sNp 文件。"""
     try:
-        ntwk = rf.Network(local_path)
-        name = name_override or os.path.splitext(os.path.basename(local_path))[0]
-        if session_id not in sessions:
-            sessions[session_id] = {"networks": {}}
-
-        nports = ntwk.nports
-        all_params = [f"S{m+1}_{n+1}" for m in range(nports) for n in range(nports)]
-
-        sessions[session_id]["networks"][name] = {
-            "path": local_path,
-            "_ntwk": ntwk,
-            "nports": nports,
-            "f_min": float(ntwk.f[0]),
-            "f_max": float(ntwk.f[-1]),
-            "npoints": len(ntwk.f),
-            "params": all_params,
-            **_inspect_network(ntwk),
-        }
-
-        freq_unit = _guess_freq_unit(ntwk)
-        display_params = all_params if len(all_params) <= 200 else all_params[:200]
-
-        return jsonify({
-            "ok": True,
-            "name": name,
-            "nports": nports,
-            "f_min": float(ntwk.f[0]),
-            "f_max": float(ntwk.f[-1]),
-            "f_unit": freq_unit,
-            "npoints": len(ntwk.f),
-            "params": display_params,
-            "params_truncated": len(all_params) > 200,
-            "total_params": len(all_params),
-            **_inspect_network(ntwk),
-        })
+        return jsonify(_register_path(session_id, local_path, name=name_override))
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
@@ -934,19 +872,8 @@ def _load_dir_to_session(dir_path, session_id, ses):
     for fname in files:
         fpath = os.path.join(dir_path, fname)
         try:
-            ntwk = sp.load_ntwk(fpath)
-            name = os.path.splitext(fname)[0]
-            name = _dedup_name(ses["networks"], name)
-            ses["networks"][name] = {
-                "path": fpath,
-                "nports": ntwk.nports,
-                "f_min": float(ntwk.f[0]),
-                "f_max": float(ntwk.f[-1]),
-                "npoints": len(ntwk.f),
-                "params": sp.list_params(ntwk),
-                **_inspect_network(ntwk),
-            }
-            loaded.append(name)
+            info = _register_path(session_id, fpath, name=os.path.splitext(fname)[0], dedup=True)
+            loaded.append(info["name"])
         except Exception:
             pass
     return {
@@ -983,31 +910,7 @@ def upload_glob():
     results = []
     for path in matches:
         try:
-            ntwk = rf.Network(path)
-            name = os.path.splitext(os.path.basename(path))[0]
-            name = _dedup_name(sessions[session_id]["networks"], name)
-            nports = ntwk.nports
-            all_params = [f"S{m+1}_{n+1}" for m in range(nports) for n in range(nports)]
-            sessions[session_id]["networks"][name] = {
-                "path": path,
-                "_ntwk": ntwk,
-                "nports": nports,
-                "f_min": float(ntwk.f[0]),
-                "f_max": float(ntwk.f[-1]),
-                "npoints": len(ntwk.f),
-                "params": all_params,
-                **_inspect_network(ntwk),
-            }
-            results.append({
-                "ok": True,
-                "name": name,
-                "nports": nports,
-                "f_min": float(ntwk.f[0]),
-                "f_max": float(ntwk.f[-1]),
-                "npoints": len(ntwk.f),
-                "params": all_params[:200],
-                **_inspect_network(ntwk),
-            })
+            results.append(_register_path(session_id, path, name=os.path.splitext(os.path.basename(path))[0], dedup=True))
         except Exception as e:
             results.append({"ok": False, "name": os.path.basename(path), "error": str(e)})
 
@@ -1153,26 +1056,34 @@ def generate_chart():
                 ntwk = sp.slice_freq(ntwk, freq_range[0], freq_range[1])
 
             for p in params:
-                m, n = _parse_param(p)
+                p_name = str(p).strip().upper()
 
-                if p.upper().startswith("Z"):
-                    trace = _make_zmag_trace(ntwk, m, n, label, p)
-                elif chart_type == "db":
-                    trace = _make_db_trace(ntwk, m, n, label, p)
-                elif chart_type == "deg":
-                    trace = _make_deg_trace(ntwk, m, n, label, p)
-                elif chart_type == "smith":
-                    trace = _make_smith_trace(ntwk, m, n, label, p)
-                elif chart_type == "vswr":
-                    trace = _make_vswr_trace(ntwk, m, label, p)
-                elif chart_type == "groupdelay":
-                    trace = _make_groupdelay_trace(ntwk, m, n, label, p)
-                elif chart_type == "mag":
-                    trace = _make_mag_trace(ntwk, m, n, label, p)
-                elif chart_type == "zmag":
-                    trace = _make_zmag_trace(ntwk, m, n, label, p)
+                if p_name.startswith("VSWR") or chart_type == "vswr":
+                    if p_name.startswith("VSWR"):
+                        m = sp.parse_vswr_param(p_name, ntwk.nports)
+                    else:
+                        _, m, _ = sp.parse_network_param(p_name, ntwk.nports, allowed_prefixes=("S",))
+                    trace = _make_vswr_trace(ntwk, m, label, p_name)
                 else:
-                    continue
+                    prefix, m, n = sp.parse_network_param(p_name, ntwk.nports, allowed_prefixes=("S", "Z", "Y"))
+                    if prefix == "Y":
+                        return jsonify({"error": "暂不支持 Y 参数图表"}), 400
+                    if prefix == "Z":
+                        trace = _make_zmag_trace(ntwk, m, n, label, p_name)
+                    elif chart_type == "db":
+                        trace = _make_db_trace(ntwk, m, n, label, p_name)
+                    elif chart_type == "deg":
+                        trace = _make_deg_trace(ntwk, m, n, label, p_name)
+                    elif chart_type == "smith":
+                        trace = _make_smith_trace(ntwk, m, n, label, p_name)
+                    elif chart_type == "groupdelay":
+                        trace = _make_groupdelay_trace(ntwk, m, n, label, p_name)
+                    elif chart_type == "mag":
+                        trace = _make_mag_trace(ntwk, m, n, label, p_name)
+                    elif chart_type == "zmag":
+                        trace = _make_zmag_trace(ntwk, m, n, label, p_name)
+                    else:
+                        continue
                 fig_data.append(trace)
 
         if not fig_data:
@@ -1185,6 +1096,8 @@ def generate_chart():
             json.dumps(fig, cls=plotly.utils.PlotlyJSONEncoder)
         ))
 
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
@@ -1204,13 +1117,16 @@ def generate_chart_html():
     if status != 200:
         return resp
     fig_json = response.get_json()
+    safe_title = html.escape(str(title), quote=True)
+    data_json = _json_for_html_script(fig_json["data"])
+    layout_json = _json_for_html_script(fig_json["layout"])
 
-    html = f"""<!DOCTYPE html>
+    page_html = f"""<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>{title}</title>
+<title>{safe_title}</title>
 <script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
 <style>
   body {{ margin: 0; padding: 20px; background: #1a1a2e; font-family: -apple-system, sans-serif; }}
@@ -1219,15 +1135,15 @@ def generate_chart_html():
 </style>
 </head>
 <body>
-<h2>{title}</h2>
+<h2>{safe_title}</h2>
 <div id="chart"></div>
 <script>
-  Plotly.newPlot('chart', {json.dumps(fig_json['data'], cls=plotly.utils.PlotlyJSONEncoder)}, {json.dumps(fig_json['layout'], cls=plotly.utils.PlotlyJSONEncoder)}, {{ responsive: true }});
+  Plotly.newPlot('chart', {data_json}, {layout_json}, {{ responsive: true }});
 </script>
 </body>
 </html>"""
 
-    return jsonify({"html": html, "title": title})
+    return jsonify({"html": page_html, "title": title})
 
 
 @app.route("/api/export/html", methods=["POST"])
@@ -1265,7 +1181,10 @@ def export_csv():
 
     freq_range = data.get("freq_range")
     if freq_range:
-        ntwk = sp.slice_freq(ntwk, freq_range[0], freq_range[1])
+        try:
+            ntwk = sp.slice_freq(ntwk, freq_range[0], freq_range[1])
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
 
     bio = io.BytesIO()
     sp.export_csv(ntwk, params, bio)
@@ -1307,27 +1226,13 @@ def cascade_chain_api():
     # 保存到 session
     tmp_path = tempfile.mktemp(suffix=f".s{result.nports}p")
     result.write_touchstone(tmp_path)
-    ses[result_name] = {
-        "path": tmp_path,
-        "nports": result.nports,
-        "f_min": float(result.f[0]),
-        "f_max": float(result.f[-1]),
-        "npoints": len(result.f),
-        "params": sp.list_params(result),
-        **_inspect_network(result),
-    }
-    sessions[session_id]["networks"][result_name] = ses[result_name]
+    info = _store_network(session_id, result_name, result, tmp_path)
 
     return jsonify({
         "ok": True,
         "name": result_name,
         "chain": chain_names,
-        "nports": result.nports,
-        "f_min": float(result.f[0]),
-        "f_max": float(result.f[-1]),
-        "npoints": len(result.f),
-        "params": sp.list_params(result),
-        **_inspect_network(result),
+        **{k: v for k, v in info.items() if k not in ("ok", "name")},
     })
 
 
@@ -1367,7 +1272,10 @@ def compare_networks():
         if ntwk is None:
             return jsonify({"error": f"找不到网络 '{name}'"}), 404
         if freq_range:
-            ntwk = sp.slice_freq(ntwk, freq_range[0], freq_range[1])
+            try:
+                ntwk = sp.slice_freq(ntwk, freq_range[0], freq_range[1])
+            except ValueError as e:
+                return jsonify({"error": str(e)}), 400
         networks.append(ntwk)
         names.append(name)
 
@@ -1377,15 +1285,15 @@ def compare_networks():
         reference_idx = names.index(ref_name)
 
     # 解析参数
-    params = []
-    for ps in param_strs:
-        ps = ps.strip().upper()
-        if ps.startswith("S") and len(ps) == 3:
-            m = int(ps[1]) - 1
-            n = int(ps[2]) - 1
+    try:
+        params = []
+        for ps in param_strs:
+            _, m, n = sp.parse_network_param(ps, min(nw.nports for nw in networks), allowed_prefixes=("S",))
             params.append((m, n))
-    if not params:
-        params = [(1, 0)]  # 默认 S21
+        if not params:
+            params = [(1, 0)]  # 默认 S21
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
 
     try:
         # 插值到共同频率
@@ -1446,7 +1354,10 @@ def export_touchstone():
 
     freq_range = data.get("freq_range")
     if freq_range:
-        ntwk = sp.slice_freq(ntwk, freq_range[0], freq_range[1])
+        try:
+            ntwk = sp.slice_freq(ntwk, freq_range[0], freq_range[1])
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
 
     bio = io.BytesIO()
     sp.save_touchstone(ntwk, bio)
@@ -1479,27 +1390,7 @@ def cascade():
     # 保存到临时文件
     tmp_path = tempfile.mktemp(suffix=f".s{ntwk_result.nports}p")
     ntwk_result.write_touchstone(tmp_path)
-
-    sessions[session_id]["networks"][result_name] = {
-        "path": tmp_path,
-        "nports": ntwk_result.nports,
-        "f_min": float(ntwk_result.f[0]),
-        "f_max": float(ntwk_result.f[-1]),
-        "npoints": len(ntwk_result.f),
-        "params": sp.list_params(ntwk_result),
-        **_inspect_network(ntwk_result),
-    }
-
-    return jsonify({
-        "ok": True,
-        "name": result_name,
-        "nports": ntwk_result.nports,
-        "f_min": float(ntwk_result.f[0]),
-        "f_max": float(ntwk_result.f[-1]),
-        "npoints": len(ntwk_result.f),
-        "params": sp.list_params(ntwk_result),
-        **_inspect_network(ntwk_result),
-    })
+    return jsonify(_store_network(session_id, result_name, ntwk_result, tmp_path))
 
 
 @app.route("/api/deembed", methods=["POST"])
@@ -1521,15 +1412,7 @@ def deembed():
 
     tmp_path = tempfile.mktemp(suffix=f".s{ntwk_result.nports}p")
     ntwk_result.write_touchstone(tmp_path)
-    sessions[session_id]["networks"][result_name] = {
-        "path": tmp_path,
-        "nports": ntwk_result.nports,
-        "f_min": float(ntwk_result.f[0]),
-        "f_max": float(ntwk_result.f[-1]),
-        "npoints": len(ntwk_result.f),
-        "params": sp.list_params(ntwk_result),
-        **_inspect_network(ntwk_result),
-    }
+    _store_network(session_id, result_name, ntwk_result, tmp_path)
 
     return jsonify({"ok": True, "name": result_name})
 
@@ -1585,6 +1468,16 @@ def _normalize_view_response(resp):
     return resp, resp.status_code
 
 
+def _json_for_html_script(value) -> str:
+    """JSON safe to embed in a script tag."""
+    return (
+        json.dumps(value, cls=plotly.utils.PlotlyJSONEncoder)
+        .replace("&", "\\u0026")
+        .replace("<", "\\u003c")
+        .replace(">", "\\u003e")
+    )
+
+
 def _inspect_network(ntwk):
     try:
         return network_inspector.inspect_network(ntwk)
@@ -1605,10 +1498,11 @@ def _read_touchstone_header(path: str) -> dict:
     """
     import re as _re
     data_re = _re.compile(r"^\s*-?\d")
+    ext_match = _re.match(r"\.s(\d+)p$", Path(path).suffix.lower())
 
     # ── 第一遍：扫描找到 # 行和第一个数据行 ──
     freq_unit = "ghz"
-    nports = 0
+    nports = int(ext_match.group(1)) if ext_match else 0
     f_min = None
     first_data_line = None
 
@@ -1635,10 +1529,10 @@ def _read_touchstone_header(path: str) -> dict:
     if first_data_line is None:
         return None
 
-    # ── 从第一个数据行推导端口数 ──
+    # ── 从第一个数据行推导端口数（扩展名无法判断时） ──
     cols = first_data_line.split()
     nvals = len(cols) - 1  # 减掉频率列
-    if nvals > 0:
+    if nports == 0 and nvals > 0:
         for cols_per_param in [2, 1]:  # RI/MA(2列) 或 DB(1列)
             n2 = nvals // cols_per_param
             n = int(n2 ** 0.5)
@@ -1690,18 +1584,13 @@ def _guess_freq_unit(ntwk):
     return "hz"
 
 
-def _parse_param(p: str):
+def _parse_param(p: str, nports: int = None):
     """'S2_1' → (1, 0), 'Z64_64' → (63, 63). Legacy 'S21' also accepted."""
     p = p.strip().upper()
-    if "_" in p:
-        rest = p[1:]
-        parts = rest.split("_", 1)
-        return int(parts[0]) - 1, int(parts[1]) - 1
-    if p.startswith(("S", "Z")) and len(p) == 3:
-        return int(p[1]) - 1, int(p[2]) - 1
     if p.startswith("VSWR"):
-        return int(p[4:]) - 1, None
-    raise ValueError(f"无法解析参数: {p}")
+        return sp.parse_vswr_param(p, nports), None
+    _, m, n = sp.parse_network_param(p, nports, allowed_prefixes=("S", "Z", "Y"))
+    return m, n
 
 
 def _freq_label(session_id):

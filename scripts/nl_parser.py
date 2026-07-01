@@ -68,7 +68,7 @@ DUAL_AXIS_WORDS = [
     "双坐标系", "两个坐标系", "左右坐标",
 ]
 
-PARAM_PATTERN = re.compile(r"[sS](\d)(\d)", re.IGNORECASE)
+PARAM_PATTERN = re.compile(r"[sS](?:\d+_\d+|[1-9][1-9])(?!\d)", re.IGNORECASE)
 VSWR_PARAM_PATTERN = re.compile(r"[vV][sS][wW][rR](\d+)")
 FREQ_RANGE_PATTERN = re.compile(
     r"(\d+\.?\d*)\s*(?:-|到|至|~)\s*(\d+\.?\d*)\s*([gG][hH][zZ]?|[mM][hH][zZ]?|[kK][hH][zZ]?)?"
@@ -117,7 +117,8 @@ def parse(text: str, available_files: List[str] = None) -> List[SParamOp]:
     # ── 后处理：如果操作缺少 target，从上一个操作继承 ──
     for i in range(1, len(ops)):
         if not ops[i].target and ops[i].action in ("plot", "slice", "export", "info"):
-            ops[i].target = ops[i - 1].target
+            if ops[i - 1].action not in ("cascade", "cascade_chain"):
+                ops[i].target = ops[i - 1].target
 
     # ── 后处理：跨段双Y轴检测 ──
     # 扫描所有段，如果一个段没有产生 op 但包含双Y轴关键词，标记最近的 plot op
@@ -138,7 +139,7 @@ def parse(text: str, available_files: List[str] = None) -> List[SParamOp]:
 
 def _split_segments(text: str) -> List[str]:
     """按连接词拆分句子为子句。"""
-    return re.split(r"[，,;；\n]|然后|再|并|并且|接着|之后|同时|、", text)
+    return re.split(r"[，,;；\n]|然后|再|并且|接着|之后|同时", text)
 
 
 def _parse_segment(seg: str, available_files: List[str] = None) -> Optional[SParamOp]:
@@ -185,16 +186,18 @@ def _parse_segment(seg: str, available_files: List[str] = None) -> Optional[SPar
                 op.cascade_with = snp_files[1]
     elif available_files:
         # 尝试从名称匹配（不带扩展名）
-        for f in available_files:
-            basename = re.sub(r"\.[^.]+$", "", f)
-            if basename.lower() in seg_lower or seg_lower in basename.lower():
-                op.target = f
-                break
+        matched_files = _match_available_files(seg, available_files)
+        if matched_files:
+            op.target = matched_files[0]
+            if action == "compare":
+                op.compare_networks = matched_files
+            elif action == "cascade" and len(matched_files) > 1:
+                op.cascade_with = matched_files[1]
 
     # ── 提取 S 参数 ──
     param_matches = PARAM_PATTERN.findall(seg)
     if param_matches:
-        op.params = [f"S{m}{n}" for m, n in param_matches]
+        op.params = [p.upper() for p in param_matches]
 
     vswr_matches = VSWR_PARAM_PATTERN.findall(seg)
     if vswr_matches:
@@ -227,6 +230,21 @@ def _parse_segment(seg: str, available_files: List[str] = None) -> Optional[SPar
         op.dual_axis = True
 
     return op
+
+
+def _match_available_files(seg: str, available_files: List[str]) -> List[str]:
+    """按用户输入顺序匹配已加载网络名。"""
+    matches = []
+    lower = seg.lower()
+    tokens = re.findall(r"[A-Za-z0-9_.-]+", lower)
+    for f in available_files or []:
+        name = str(f)
+        basename = re.sub(r"\.[^.]+$", "", name)
+        candidates = [name.lower(), basename.lower()]
+        if any(c and (c in tokens or re.search(rf"(?<![A-Za-z0-9_]){re.escape(c)}(?![A-Za-z0-9_])", lower)) for c in candidates):
+            if name not in matches:
+                matches.append(name)
+    return matches
 
 
 # ──────────────────────────────────────────────
