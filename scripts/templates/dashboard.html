@@ -881,9 +881,17 @@ async function sendChat() {
 
   try {
     let data = await postJsonWithTimeout('/api/chat', { text, session: 'default' }, 60000);
+    let handoffMsg = null;
     if (data && data.handled === false && chatMode.llm_available) {
-      addChatMsg('agent', '规则解析没有命中，切到代码 Agent 试一下...');
-      data = await postJsonWithTimeout('/api/agent', { text, session: 'default' }, 120000);
+      handoffMsg = addChatMsg('agent', '规则聊天无法安全确定这个需求，正在交给代码 Agent 生成并验证代码...');
+      data = await postJsonWithTimeout('/api/agent', { text, session: 'default' }, 240000);
+      if (handoffMsg && handoffMsg.parentNode) {
+        handoffMsg.remove();
+      }
+    }
+
+    if (data.plan) {
+      addChatMsg('agent', formatAgentPlan(data.plan));
     }
 
     // 显示生成的代码
@@ -926,6 +934,17 @@ async function sendChat() {
   }
 }
 
+function formatAgentPlan(plan) {
+  const steps = Array.isArray(plan.steps) ? plan.steps.map(s => s.op).join(' -> ') : '';
+  const traces = plan.output && Array.isArray(plan.output.traces)
+    ? plan.output.traces.map(t => t.param).join(', ')
+    : '';
+  const assumptions = Array.isArray(plan.assumptions) && plan.assumptions.length
+    ? `\n假设: ${plan.assumptions.join('; ')}`
+    : '';
+  return `RF Plan: ${steps || '未命名步骤'}${traces ? `\n输出: ${traces}` : ''}${assumptions}`;
+}
+
 function addChatMsg(cls, text) {
   const container = document.getElementById('chat-messages');
   const div = document.createElement('div');
@@ -933,6 +952,7 @@ function addChatMsg(cls, text) {
   div.textContent = text;
   container.appendChild(div);
   container.scrollTop = container.scrollHeight;
+  return div;
 }
 
 

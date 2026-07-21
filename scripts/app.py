@@ -12,6 +12,7 @@ import json
 import tempfile
 import traceback
 import html
+import re
 from pathlib import Path
 
 import numpy as np
@@ -32,8 +33,8 @@ _BASE = _base_dir()
 sys.path.insert(0, _BASE)
 import s_params as sp
 import nl_parser
-import llm_chat
 import code_agent
+import agent_plan
 import network_inspector
 
 app = Flask(__name__, template_folder=os.path.join(_BASE, "templates"))
@@ -43,6 +44,10 @@ app.config["MAX_CONTENT_LENGTH"] = 500 * 1024 * 1024  # 500 MB 上传上限（�
 sessions = {}  # { session_id: { "networks": {name: Network}, "freq_unit": "ghz" } }
 EAGER_LOAD_MAX_PORTS = 7
 EAGER_LOAD_MAX_BYTES = 25 * 1024 * 1024
+_MIXED_PARAM_RE = re.compile(
+    r"(?<![A-Z0-9_])S(?:DD|DC|CD|CC)(?:\d+_\d+|[1-9][1-9])(?![A-Z0-9_])",
+    re.IGNORECASE,
+)
 
 # ──────────────────────────────────────────────────────────────
 #  页面路由
@@ -105,7 +110,9 @@ def agent():
         file_path = None
         if ses:
             last = list(ses.values())[-1]
-            file_path = os.path.abspath(last.get("path", ""))
+            last_path = last.get("path", "")
+            if last_path:
+                file_path = os.path.abspath(last_path)
 
         # 如果文本中包含文件路径，优先使用（提取 .sNp 路径）
         import re as _re
@@ -116,14 +123,65 @@ def agent():
         # ── 构建网络字典（名称 → dict），供 Agent 执行时预加载 ──
         nets_dict = {}
         for net_name, net_info in ses.items():
-            nets_dict[net_name] = {
-                "path": net_info.get("path", ""),
-                "nports": net_info.get("nports", 0),
-            }
+            nets_dict[net_name] = _agent_network_payload(net_info)
 
-        # ── 调用代码生成 Agent ──
+        _apply_user_mixed_mode_confirmation(text, nets_dict, ses)
+        mixed_block = _mixed_mode_confirmation_response(text, nets_dict)
+        if mixed_block:
+            return jsonify(mixed_block)
+
+        # ── 先让 LLM 产出短 RF Plan；能确定性执行的请求不再生成代码 ──
+        plan_result = code_agent.build_rf_plan(
+            text,
+            file_path=file_path,
+            networks=nets_dict if nets_dict else None,
+        )
+        if plan_result.get("needs_confirmation"):
+            reply = plan_result.get("reply", "需要确认后才能执行")
+            return jsonify({
+                "reply": reply,
+                "results": [{"type": "error", "message": reply}],
+                "mode": "agent",
+                "needs_confirmation": True,
+                "plan": plan_result.get("plan"),
+                "planning_history": plan_result.get("history", []),
+            })
+        if not plan_result.get("ok"):
+            return jsonify({
+                "reply": f"❌ Agent 规划失败: {plan_result.get('error', '未知错误')}",
+                "results": [],
+                "mode": "agent",
+                "plan": plan_result.get("plan"),
+                "planning_history": plan_result.get("history", []),
+            })
+
+        plan = plan_result["plan"]
+        planning_history = plan_result.get("history", [])
+        deterministic = _try_execute_rf_plan(
+            session_id,
+            plan,
+            nets_dict if nets_dict else {},
+            planning_history=planning_history,
+        )
+        if deterministic is not None:
+            return jsonify(deterministic)
+
+        # ── 超出确定性执行范围时，再调用代码生成 Agent ──
         result = code_agent.generate_code(text, file_path=file_path,
-                                           networks=nets_dict if nets_dict else None)
+                                           networks=nets_dict if nets_dict else None,
+                                           rf_plan=plan,
+                                           planning_history=planning_history)
+
+        if result.get("needs_confirmation"):
+            reply = result.get("reply", "需要确认后才能执行")
+            return jsonify({
+                "reply": reply,
+                "results": [{"type": "error", "message": reply}],
+                "mode": "agent",
+                "needs_confirmation": True,
+                "plan": result.get("plan"),
+                "planning_history": result.get("planning_history", []),
+            })
 
         if "error" in result:
             return jsonify({
@@ -132,6 +190,8 @@ def agent():
                 "mode": "agent",
                 "code": result.get("code", ""),
                 "llm_raw": result.get("llm_raw", ""),
+                "plan": result.get("plan"),
+                "planning_history": result.get("planning_history", []),
             })
 
         code = result["code"]
@@ -172,6 +232,10 @@ def agent():
                 "code": code,
                 "exec_stdout": exec_r.get("stdout", ""),
                 "exec_stderr": stderr,
+                "retries": result.get("retries", 0),
+                "plan": result.get("plan"),
+                "planning_history": result.get("planning_history", []),
+                "history": result.get("history", []),
             })
 
         # 执行成功
@@ -199,6 +263,8 @@ def agent():
             "validated": True,
             "exec_stdout": exec_r.get("stdout", ""),
             "retries": result.get("retries", 0),
+            "plan": result.get("plan"),
+            "planning_history": result.get("planning_history", []),
             "history": result.get("history", []),
         })
 
@@ -241,11 +307,8 @@ def chat():
     except Exception as e:
         return jsonify({"reply": f"解析失败: {str(e)}", "results": [], "handled": False})
 
-    if not ops and llm_chat.is_available():
-        llm_ops = llm_chat.parse_with_llm(text, available)
-        if llm_ops:
-            ops = llm_chat.ops_to_nl_parser_format(llm_ops)
-            parse_mode = "llm"
+    if ops and _should_defer_to_agent(text, ops):
+        ops = []
 
     if not ops:
         return jsonify({
@@ -293,6 +356,133 @@ def chat():
         "parse_mode": parse_mode,
         "handled": True,
     })
+
+
+def _should_defer_to_agent(text: str, ops: list) -> bool:
+    """复杂 RF 意图不让规则路径默认展开成全部参数，交给代码 Agent。"""
+    text = text or ""
+    has_mixed_param = _MIXED_PARAM_RE.search(text) is not None
+    has_mixed_words = any(word in text for word in ("差分", "共模", "混模"))
+    if not (has_mixed_param or has_mixed_words):
+        return False
+    for op in ops:
+        if op.action in ("plot", "export", "compare") and not op.params:
+            return True
+    return False
+
+
+def _is_mixed_mode_request(text: str) -> bool:
+    text = text or ""
+    return _MIXED_PARAM_RE.search(text) is not None or any(word in text for word in ("差分", "共模", "混模"))
+
+
+def _mixed_mode_confirmation_response(text: str, networks: dict):
+    """Stop ambiguous mixed-mode requests before the Agent fabricates a P/N mapping."""
+    if not _is_mixed_mode_request(text) or not networks:
+        return None
+
+    name = list(networks.keys())[-1]
+    info = networks[name]
+    mixed = info.get("mixed_mode") or {}
+    if mixed.get("status") == "ready":
+        return None
+
+    port_names = info.get("port_names") or [f"Port{i + 1}" for i in range(info.get("nports", 0))]
+    lines = [
+        f"我不能安全确定 **{name}** 的差分 P/N 端口，所以没有生成权威混模图。",
+    ]
+    through = mixed.get("through_paths") or []
+    if through:
+        lines.append("当前只能识别到疑似单端传输路径: " + _format_port_pairs(through, port_names))
+    alternatives = mixed.get("alternatives") or []
+    if alternatives:
+        lines.append("可能的差分端点候选:")
+        for idx, alt in enumerate(alternatives[:3], start=1):
+            pairs = [
+                pair.get("ports", [])
+                for pair in alt.get("differential_pairs", [])
+                if len(pair.get("ports", [])) == 2
+            ]
+            lines.append(f"  {idx}. {_format_port_pairs(pairs, port_names)}")
+    lines.append("请在 Touchstone 端口名中标出 _P/_N、+/-、DP/DN，或明确告诉我端口配对，例如: P/N 配对为 (1,3),(2,4)。")
+
+    message = "\n".join(lines)
+    return {
+        "reply": message,
+        "results": [{"type": "error", "message": message}],
+        "mode": "agent",
+        "needs_confirmation": True,
+        "mixed_mode": mixed,
+    }
+
+
+def _apply_user_mixed_mode_confirmation(text: str, networks: dict, ses: dict):
+    if not _is_mixed_mode_request(text) or not networks:
+        return
+    name = list(networks.keys())[-1]
+    info = networks[name]
+    pairs = _parse_user_mixed_mode_pairs(text, int(info.get("nports") or 0))
+    if not pairs:
+        return
+
+    mixed = {
+        "status": "ready",
+        "source": "user",
+        "pair_count": len(pairs),
+        "differential_pairs": [
+            {
+                "ports": [p, n],
+                "p": p,
+                "n": n,
+                "source": "user",
+                "confidence": "high",
+            }
+            for p, n in pairs
+        ],
+        "se2gmm_order": [port for pair in pairs for port in pair],
+        "through_paths": (info.get("mixed_mode") or {}).get("through_paths", []),
+        "confidence": {
+            "endpoint_pairing": "high",
+            "polarity": "user",
+        },
+    }
+    info["mixed_mode"] = mixed
+    if name in ses:
+        ses[name]["mixed_mode"] = mixed
+
+
+def _parse_user_mixed_mode_pairs(text: str, nports: int):
+    if nports < 2:
+        return []
+    matches = re.findall(r"\(\s*(\d+)\s*[,，/]\s*(\d+)\s*\)", text or "")
+    if not matches:
+        return []
+    pairs = []
+    used = set()
+    for p_text, n_text in matches:
+        p = int(p_text) - 1
+        n = int(n_text) - 1
+        if p < 0 or n < 0 or p >= nports or n >= nports or p == n:
+            return []
+        if p in used or n in used:
+            return []
+        pairs.append((p, n))
+        used.update((p, n))
+    if len(pairs) * 2 != nports:
+        return []
+    return pairs
+
+
+def _format_port_pairs(pairs, port_names) -> str:
+    formatted = []
+    for pair in pairs:
+        if len(pair) != 2:
+            continue
+        a, b = int(pair[0]), int(pair[1])
+        a_name = port_names[a] if 0 <= a < len(port_names) else f"Port{a + 1}"
+        b_name = port_names[b] if 0 <= b < len(port_names) else f"Port{b + 1}"
+        formatted.append(f"({a_name}/{a + 1}, {b_name}/{b + 1})")
+    return ", ".join(formatted) if formatted else "无"
 
 
 def _execute_op(op, session_id: str, last_ntwk_name: str = None) -> dict:
@@ -616,6 +806,286 @@ def _dispatch_plot(ntwk, params, chart_type: str, title: str, name: str):
         return sp.plot_s_db(ntwk, p, title=title or f"{basename} S-Parameters")
 
 
+def _try_execute_rf_plan(session_id: str, plan: dict, networks_meta: dict, planning_history: list = None):
+    """
+    Execute the validated subset of RF Plan directly in Python.
+
+    This path is intentionally narrow: trusted RF transforms and exact trace plotting.
+    Unsupported steps return None so the code Agent can handle genuinely open-ended work.
+    """
+    output = plan.get("output") or {}
+    if output.get("kind") != "plot":
+        return None
+
+    chart_type = (output.get("chart_type") or "db").lower()
+    if chart_type not in {"db", "mag", "deg", "smith", "vswr", "zmag", "zreal", "zimag", "groupdelay"}:
+        return None
+
+    values = {}
+    source_names = {}
+    value_modes = {}
+
+    try:
+        for step in plan.get("steps") or []:
+            sid = step.get("id")
+            op = step.get("op")
+            inputs = step.get("inputs") or []
+            args = step.get("args") or {}
+
+            if op == "select":
+                name = inputs[0].split(":", 1)[1]
+                ntwk = _get_network(session_id, name)
+                if ntwk is None:
+                    return _rf_plan_error(f"找不到网络 '{name}'，无法执行 RF Plan", plan, planning_history)
+                values[sid] = ntwk
+                source_names[sid] = name
+                value_modes[sid] = "single_ended"
+                continue
+
+            if op not in {"slice_freq", "renormalize", "mixed_mode"}:
+                return None
+
+            ref = _single_step_input(inputs)
+            if not ref or ref not in values:
+                return _rf_plan_error(f"RF Plan step {sid} 输入无效", plan, planning_history)
+
+            ntwk = values[ref]
+            source_names[sid] = source_names.get(ref, "")
+            value_modes[sid] = value_modes.get(ref, "single_ended")
+
+            if op == "slice_freq":
+                freq_range = _plan_freq_range(args)
+                if not freq_range:
+                    return _rf_plan_error(f"RF Plan step {sid} 缺少频率范围", plan, planning_history)
+                values[sid] = sp.slice_freq(ntwk, freq_range[0], freq_range[1])
+            elif op == "renormalize":
+                z0 = _first_present(args, "z0", "z0_ohm", "reference_impedance", "impedance")
+                if z0 is None:
+                    return _rf_plan_error(f"RF Plan step {sid} 缺少 z0", plan, planning_history)
+                values[sid] = sp.renormalize(ntwk, float(z0))
+            elif op == "mixed_mode":
+                name = source_names.get(ref, "")
+                mixed = (networks_meta.get(name) or {}).get("mixed_mode") or {}
+                if mixed.get("status") != "ready":
+                    reply = f"网络 '{name}' 的差分 P/N 映射未确认，不能生成权威混模结果。"
+                    return {
+                        "reply": reply,
+                        "results": [{"type": "error", "message": reply}],
+                        "mode": "agent_plan",
+                        "needs_confirmation": True,
+                        "plan": plan,
+                        "planning_history": planning_history or [],
+                    }
+                values[sid] = _convert_to_mixed_mode(ntwk, mixed)
+                value_modes[sid] = "mixed_mode"
+    except ValueError as e:
+        return _rf_plan_error(str(e), plan, planning_history)
+
+    traces = output.get("traces") or []
+    if not traces:
+        return _rf_plan_error("RF Plan 没有指定任何输出 trace", plan, planning_history)
+
+    try:
+        fig_data = []
+        for trace in traces:
+            source = trace.get("source")
+            param = agent_plan.normalize_param(trace.get("param", ""))
+            if source not in values or not param:
+                return _rf_plan_error("RF Plan trace 引用无效", plan, planning_history)
+            name = source_names.get(source, source)
+            label = trace.get("label") or name
+            if _is_mixed_param(param):
+                if value_modes.get(source) != "mixed_mode":
+                    mixed_source = _matching_mixed_source(source, source_names, value_modes)
+                    if not mixed_source:
+                        return _rf_plan_error(f"{param} 需要先执行 mixed_mode step", plan, planning_history)
+                    source = mixed_source
+                    name = source_names.get(source, source)
+                    label = trace.get("label") or name
+                fig_data.append(_make_mixed_trace(values[source], param, chart_type, label))
+            else:
+                fig_data.append(_make_plan_trace(values[source], param, chart_type, label))
+
+        expected = agent_plan.expected_trace_count(plan)
+        if expected is not None and len(fig_data) != expected:
+            return _rf_plan_error(f"RF Plan 期望 {expected} 条曲线，实际生成 {len(fig_data)} 条", plan, planning_history)
+
+        title = _rf_plan_title(plan, source_names)
+        layout_type = "zmag" if chart_type in ("zreal", "zimag") else chart_type
+        layout = _make_layout(layout_type, title, {})
+        if chart_type == "zreal":
+            layout["yaxis"]["title"] = "Real(Z) (ohm)"
+            layout["yaxis"].pop("type", None)
+        elif chart_type == "zimag":
+            layout["yaxis"]["title"] = "Imag(Z) (ohm)"
+            layout["yaxis"].pop("type", None)
+
+        chart = json.loads(json.dumps(
+            {"data": fig_data, "layout": layout},
+            cls=plotly.utils.PlotlyJSONEncoder,
+        ))
+        return {
+            "reply": "✅ RF Plan 已确定性执行\n📊 图表已生成",
+            "results": [{"type": "chart", "chart": chart, "title": title}],
+            "mode": "agent_plan",
+            "deterministic": True,
+            "plan": plan,
+            "planning_history": planning_history or [],
+        }
+    except ValueError as e:
+        return _rf_plan_error(str(e), plan, planning_history)
+
+
+def _single_step_input(inputs):
+    refs = [item for item in inputs if isinstance(item, str) and not item.startswith("network:")]
+    return refs[0] if len(refs) == 1 else None
+
+
+def _matching_mixed_source(source: str, source_names: dict, value_modes: dict):
+    name = source_names.get(source)
+    matches = [
+        sid for sid, mode in value_modes.items()
+        if mode == "mixed_mode" and source_names.get(sid) == name
+    ]
+    return matches[-1] if len(matches) == 1 else None
+
+
+def _first_present(mapping: dict, *keys):
+    for key in keys:
+        if key in mapping:
+            return mapping[key]
+    return None
+
+
+def _plan_freq_range(args: dict):
+    for key in ("freq_range", "frequency_range", "range"):
+        if key not in args:
+            continue
+        value = args[key]
+        if isinstance(value, (list, tuple)) and len(value) == 2:
+            return value[0], value[1]
+        if isinstance(value, str):
+            return value, None
+    start = _first_present(args, "start", "start_freq", "f_start", "from")
+    stop = _first_present(args, "stop", "stop_freq", "f_stop", "end", "to")
+    if start is not None and stop is not None:
+        return start, stop
+    return None
+
+
+def _rf_plan_error(message: str, plan: dict, planning_history: list = None):
+    reply = f"❌ RF Plan 执行失败: {message}"
+    return {
+        "reply": reply,
+        "results": [{"type": "error", "message": message}],
+        "mode": "agent_plan",
+        "deterministic": True,
+        "plan": plan,
+        "planning_history": planning_history or [],
+    }
+
+
+def _convert_to_mixed_mode(ntwk, mixed: dict):
+    pair_count = int(mixed.get("pair_count") or 0)
+    order = [int(i) for i in (mixed.get("se2gmm_order") or [])]
+    if pair_count <= 0:
+        raise ValueError("mixed_mode 缺少有效 pair_count")
+    if len(order) != ntwk.nports:
+        raise ValueError("mixed_mode se2gmm_order 与网络端口数不一致")
+    if sorted(order) != list(range(ntwk.nports)):
+        raise ValueError("mixed_mode se2gmm_order 不是完整端口排列")
+    if pair_count * 2 != ntwk.nports:
+        raise ValueError("mixed_mode pair_count 与网络端口数不一致")
+
+    mm = ntwk.copy()
+    if order != list(range(len(order))):
+        mm.renumber(order, list(range(len(order))))
+    mm.se2gmm(p=pair_count)
+    return mm
+
+
+def _is_mixed_param(param: str) -> bool:
+    return str(param or "").upper().startswith(("SDD", "SDC", "SCD", "SCC"))
+
+
+def _mixed_indices(param: str, pair_count: int):
+    m = re.fullmatch(r"S(DD|DC|CD|CC)(\d+)_(\d+)", param.upper())
+    if not m:
+        raise ValueError(f"无法解析混模参数: {param}")
+    block, row_text, col_text = m.groups()
+    row = int(row_text) - 1
+    col = int(col_text) - 1
+    if row < 0 or col < 0 or row >= pair_count or col >= pair_count:
+        raise ValueError(f"{param} 差分端口越界")
+    row_offset = 0 if block[0] == "D" else pair_count
+    col_offset = 0 if block[1] == "D" else pair_count
+    return row + row_offset, col + col_offset
+
+
+def _make_mixed_trace(ntwk, param: str, chart_type: str, label: str):
+    row, col = _mixed_indices(param, ntwk.nports // 2)
+    return _make_s_like_trace(ntwk, row, col, chart_type, label, param)
+
+
+def _make_plan_trace(ntwk, param: str, chart_type: str, label: str):
+    param = agent_plan.normalize_param(param)
+    if param.startswith("VSWR"):
+        port = sp.parse_vswr_param(param, ntwk.nports)
+        return _make_vswr_trace(ntwk, port, label, param)
+
+    prefix, row, col = sp.parse_network_param(param, ntwk.nports, allowed_prefixes=("S", "Z", "Y"))
+    if prefix == "S":
+        return _make_s_like_trace(ntwk, row, col, chart_type, label, param)
+    if prefix == "Z":
+        return _make_z_trace(ntwk, row, col, chart_type, label, param)
+    raise ValueError("确定性执行暂不支持 Y 参数图表")
+
+
+def _make_s_like_trace(ntwk, row: int, col: int, chart_type: str, label: str, param: str):
+    if chart_type == "deg":
+        return _make_deg_trace(ntwk, row, col, label, param)
+    if chart_type == "smith":
+        return _make_smith_trace(ntwk, row, col, label, param)
+    if chart_type == "groupdelay":
+        return _make_groupdelay_trace(ntwk, row, col, label, param)
+    if chart_type == "mag":
+        return _make_mag_trace(ntwk, row, col, label, param)
+    if chart_type == "vswr":
+        return _make_vswr_trace(ntwk, row, label, param)
+    if chart_type in {"db", "zmag", "zreal", "zimag"}:
+        return _make_db_trace(ntwk, row, col, label, param)
+    raise ValueError(f"不支持的图表类型: {chart_type}")
+
+
+def _make_z_trace(ntwk, row: int, col: int, chart_type: str, label: str, param: str):
+    freq = ntwk.f / 1e9
+    z = ntwk.z[:, row, col]
+    if chart_type == "zreal":
+        y = np.real(z)
+        unit = "Re(Z)"
+    elif chart_type == "zimag":
+        y = np.imag(z)
+        unit = "Im(Z)"
+    else:
+        y = np.abs(z)
+        unit = "|Z|"
+    return {
+        "x": freq.tolist(),
+        "y": np.asarray(y).tolist(),
+        "type": "scatter",
+        "mode": "lines",
+        "name": f"{label} {param}",
+        "hovertemplate": f"<b>{label} {param}</b><br>%{{x:.4f}} GHz<br>{unit}: %{{y:.4f}} Ω<extra></extra>",
+    }
+
+
+def _rf_plan_title(plan: dict, source_names: dict) -> str:
+    params = [t.get("param", "") for t in (plan.get("output") or {}).get("traces") or []]
+    names = list(dict.fromkeys(n for n in source_names.values() if n))
+    prefix = ", ".join(names) if names else "RF Plan"
+    return f"{prefix} {'/'.join(params)}"
+
+
 def _basename(path_or_name: str) -> str:
     return os.path.splitext(os.path.basename(path_or_name))[0]
 
@@ -641,6 +1111,7 @@ def _entry_response(name: str, entry: dict) -> dict:
         "network_kind": entry.get("network_kind", "unknown"),
         "port_names": entry.get("port_names", []),
         "port_pairs": entry.get("port_pairs", []),
+        "mixed_mode": entry.get("mixed_mode", {}),
         "quick_actions": entry.get("quick_actions", []),
     }
     params = entry.get("params", [])
@@ -648,6 +1119,55 @@ def _entry_response(name: str, entry: dict) -> dict:
     response["params_truncated"] = len(params) > 200
     response["total_params"] = len(params)
     return response
+
+
+def _agent_network_payload(entry: dict) -> dict:
+    """Return JSON-safe network context for the code-generation Agent."""
+    ntwk = entry.get("_ntwk")
+    if ntwk is not None and (
+        "network_kind" not in entry or "port_names" not in entry or "quick_actions" not in entry
+    ):
+        entry.update(_inspect_network(ntwk))
+
+    params = list(entry.get("params") or [])
+    if ntwk is not None and not params:
+        params = sp.list_params(ntwk)
+    path = entry.get("path") or ""
+    f_min = entry.get("f_min")
+    f_max = entry.get("f_max")
+    npoints = entry.get("npoints")
+    if ntwk is not None:
+        if f_min is None and len(ntwk.f):
+            f_min = ntwk.f[0]
+        if f_max is None and len(ntwk.f):
+            f_max = ntwk.f[-1]
+        if npoints is None:
+            npoints = len(ntwk.f)
+    payload = {
+        "path": os.path.abspath(path) if path else "",
+        "nports": int(entry.get("nports") or getattr(ntwk, "nports", 0) or 0),
+        "f_min": float(f_min or 0.0),
+        "f_max": float(f_max or 0.0),
+        "npoints": int(npoints or 0),
+        "loaded": ntwk is not None,
+        "network_kind": entry.get("network_kind", "unknown"),
+        "port_names": list(entry.get("port_names") or []),
+        "port_pairs": list(entry.get("port_pairs") or []),
+        "mixed_mode": entry.get("mixed_mode") or {},
+        "quick_actions": list(entry.get("quick_actions") or []),
+        "params": params[:80],
+        "total_params": len(params),
+    }
+
+    if ntwk is not None:
+        try:
+            z0 = np.asarray(ntwk.z0)
+            if z0.size:
+                payload["z0"] = float(np.real(z0.flat[0]))
+        except Exception:
+            pass
+
+    return payload
 
 
 def _entry_from_network(path: str, ntwk) -> dict:
@@ -677,6 +1197,16 @@ def _entry_from_header(path: str, header: dict) -> dict:
         "network_kind": "unknown",
         "port_names": [f"Port{i + 1}" for i in range(nports)],
         "port_pairs": [],
+        "mixed_mode": {
+            "status": "unsupported",
+            "source": "header",
+            "pair_count": 0,
+            "differential_pairs": [],
+            "se2gmm_order": [],
+            "through_paths": [],
+            "confidence": {"endpoint_pairing": "none", "polarity": "unknown"},
+            "message": "metadata-only network is not inspected yet",
+        },
         "quick_actions": [],
     }
 
@@ -1486,6 +2016,7 @@ def _inspect_network(ntwk):
             "network_kind": "unknown",
             "port_names": [],
             "port_pairs": [],
+            "mixed_mode": {},
             "quick_actions": [],
         }
 

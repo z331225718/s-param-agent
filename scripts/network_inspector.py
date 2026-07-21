@@ -14,6 +14,8 @@ ENDPOINT_TOKENS = {
     "J1", "J2", "J3", "J4", "NEAR", "FAR", "IN", "OUT", "INPUT", "OUTPUT",
     "TX", "RX", "SRC", "DST", "SOURCE", "LOAD", "A", "B",
 }
+POSITIVE_TOKENS = {"P", "POS", "PLUS", "TRUE", "DP", "DPLUS"}
+NEGATIVE_TOKENS = {"N", "NEG", "MINUS", "FALSE", "DN", "DM", "DNEG"}
 
 
 def get_port_names(ntwk) -> List[str]:
@@ -131,12 +133,174 @@ def inspect_network(ntwk) -> Dict:
         "network_kind": classify_network(ntwk),
         "port_names": get_port_names(ntwk),
         "port_pairs": detect_port_pairs(ntwk),
+        "mixed_mode": detect_mixed_mode(ntwk),
         "quick_actions": build_quick_actions(ntwk),
     }
 
 
+def detect_mixed_mode(ntwk) -> Dict:
+    """Infer mixed-mode metadata without pretending ambiguous P/N mapping is certain."""
+    nports = getattr(ntwk, "nports", 0)
+    if nports < 2 or nports % 2:
+        return _mixed_mode_unsupported("mixed-mode conversion requires an even number of ports")
+
+    name_pairs = _name_differential_pairs(ntwk)
+    if name_pairs and len(name_pairs) * 2 == nports:
+        pairs = [
+            {
+                "ports": [pair["p"], pair["n"]],
+                "p": pair["p"],
+                "n": pair["n"],
+                "source": "port_names",
+                "confidence": "high",
+            }
+            for pair in name_pairs
+        ]
+        return {
+            "status": "ready",
+            "source": "port_names",
+            "pair_count": len(pairs),
+            "differential_pairs": pairs,
+            "se2gmm_order": _pairs_to_order(pairs),
+            "through_paths": [[p["a"], p["b"]] for p in detect_port_pairs(ntwk)],
+            "confidence": {
+                "endpoint_pairing": "high",
+                "polarity": "high",
+            },
+        }
+
+    if nports == 4:
+        path_pairs = [p for p in detect_port_pairs(ntwk) if p.get("confidence") == "high"]
+        if len(path_pairs) == 2 and _covers_all_ports(path_pairs, nports):
+            a0, b0 = path_pairs[0]["a"], path_pairs[0]["b"]
+            a1, b1 = path_pairs[1]["a"], path_pairs[1]["b"]
+            alternatives = [
+                _candidate_from_pairs([(a0, a1), (b0, b1)], "matrix_endpoint_candidate_1"),
+                _candidate_from_pairs([(a0, b1), (b0, a1)], "matrix_endpoint_candidate_2"),
+            ]
+            return {
+                "status": "needs_confirmation",
+                "source": "matrix",
+                "pair_count": 2,
+                "through_paths": [[p["a"], p["b"]] for p in path_pairs],
+                "differential_pairs": alternatives[0]["differential_pairs"],
+                "se2gmm_order": alternatives[0]["se2gmm_order"],
+                "alternatives": alternatives,
+                "confidence": {
+                    "through_paths": "high",
+                    "endpoint_pairing": "low",
+                    "polarity": "unknown",
+                },
+                "message": "Only through paths were inferred; differential P/N pairs need confirmation.",
+            }
+
+    return _mixed_mode_unsupported("no reliable P/N port naming or confirmable 4-port path pattern")
+
+
 def _tokens(name: str) -> List[str]:
     return [t for t in re.split(r"[^A-Za-z0-9]+", name.upper()) if t]
+
+
+def _name_differential_pairs(ntwk) -> List[Dict]:
+    groups = defaultdict(lambda: {"p": [], "n": []})
+    for idx, name in enumerate(get_port_names(ntwk)):
+        polarity = _polarity_from_name(name)
+        if not polarity:
+            continue
+        key = _differential_name_key(name)
+        groups[key][polarity].append(idx)
+
+    pairs = []
+    used = set()
+    for key in sorted(groups):
+        p_ports = groups[key]["p"]
+        n_ports = groups[key]["n"]
+        if len(p_ports) != len(n_ports):
+            continue
+        for p, n in zip(sorted(p_ports), sorted(n_ports)):
+            if p in used or n in used:
+                continue
+            pairs.append({"p": int(p), "n": int(n), "key": key})
+            used.update((p, n))
+    return pairs
+
+
+def _polarity_from_name(name: str):
+    upper = name.upper()
+    tokens = _tokens(upper)
+    if any(t in POSITIVE_TOKENS for t in tokens) or "+" in name:
+        return "p"
+    if any(t in NEGATIVE_TOKENS for t in tokens):
+        return "n"
+
+    last = tokens[-1] if tokens else ""
+    if last and last not in ("PORT", "PWR"):
+        if len(last) > 1 and last.endswith("P") and not last.startswith("PORT"):
+            return "p"
+        if len(last) > 1 and last.endswith("N") and not last.startswith("PIN"):
+            return "n"
+    return None
+
+
+def _differential_name_key(name: str) -> str:
+    parts = []
+    for token in _tokens(name):
+        if token in POSITIVE_TOKENS or token in NEGATIVE_TOKENS:
+            continue
+        if len(token) > 1 and token[-1] in ("P", "N") and not token.startswith(("PORT", "PIN")):
+            token = token[:-1]
+        if token:
+            parts.append(token)
+    return "_".join(parts) or "diff"
+
+
+def _pairs_to_order(pairs: List[Dict]) -> List[int]:
+    order = []
+    for pair in pairs:
+        order.extend([int(pair["p"]), int(pair["n"])])
+    return order
+
+
+def _covers_all_ports(path_pairs: List[Dict], nports: int) -> bool:
+    ports = []
+    for pair in path_pairs:
+        ports.extend([pair["a"], pair["b"]])
+    return sorted(ports) == list(range(nports))
+
+
+def _candidate_from_pairs(pairs, source: str) -> Dict:
+    diff_pairs = [
+        {
+            "ports": [int(p), int(n)],
+            "p": None,
+            "n": None,
+            "source": source,
+            "confidence": "low",
+        }
+        for p, n in pairs
+    ]
+    return {
+        "source": source,
+        "differential_pairs": diff_pairs,
+        "se2gmm_order": [port for pair in pairs for port in (int(pair[0]), int(pair[1]))],
+        "confidence": "low",
+    }
+
+
+def _mixed_mode_unsupported(message: str) -> Dict:
+    return {
+        "status": "unsupported",
+        "source": "none",
+        "pair_count": 0,
+        "differential_pairs": [],
+        "se2gmm_order": [],
+        "through_paths": [],
+        "confidence": {
+            "endpoint_pairing": "none",
+            "polarity": "unknown",
+        },
+        "message": message,
+    }
 
 
 def _net_key(name: str) -> str:

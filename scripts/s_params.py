@@ -104,7 +104,6 @@ def save_csv(
     data = [freq_ghz]
 
     for m, n in params:
-        s_mn = ntwk.s[:, m, n]
         columns.append(f"S{m+1}{n+1}_dB")
         data.append(ntwk.s_db[:, m, n])
         if include_deg:

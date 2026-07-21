@@ -13,6 +13,7 @@ if SCRIPTS not in sys.path:
     sys.path.insert(0, SCRIPTS)
 
 import app as app_module
+import agent_plan
 import code_agent
 import nl_parser
 import s_params as sp
@@ -279,6 +280,59 @@ class TestExportsAndApi(unittest.TestCase):
         self.assertIn("A+B", app_module.sessions["test"]["networks"])
         self.assertTrue(payload["results"][1]["title"].startswith("A+B"))
 
+    def test_chat_leaves_advanced_sdd_request_for_agent_fallback(self):
+        register_network(self.ntwk)
+
+        with app_module.app.test_client() as client:
+            resp = client.post("/api/chat", json={
+                "session": "test",
+                "text": "转差分s参数画sdd11",
+            })
+
+        self.assertEqual(200, resp.status_code)
+        payload = resp.get_json()
+        self.assertFalse(payload["handled"])
+        self.assertEqual([], payload["results"])
+
+    def test_agent_failure_response_keeps_retry_history(self):
+        original_available = app_module.code_agent.is_available
+        original_build = app_module.code_agent.build_rf_plan
+        original_generate = app_module.code_agent.generate_code
+        app_module.code_agent.is_available = lambda: True
+        app_module.code_agent.build_rf_plan = lambda *args, **kwargs: {
+            "ok": True,
+            "plan": {
+                "schema_version": 1,
+                "steps": [
+                    {"id": "s1", "op": "select", "inputs": ["network:fixture"], "args": {}},
+                    {"id": "s2", "op": "derive", "inputs": ["s1"], "args": {"kind": "custom"}},
+                ],
+                "output": {"kind": "text", "inputs": ["s2"], "chart_type": "db", "traces": []},
+                "assumptions": [],
+            },
+            "history": [{"attempt": 1, "ok": True}],
+        }
+        app_module.code_agent.generate_code = lambda *args, **kwargs: {
+            "code": "fig = None",
+            "validated": True,
+            "validation_msg": "OK",
+            "exec_result": {"ok": False, "error": "boom", "stdout": "", "stderr": ""},
+            "retries": 2,
+            "history": [{"attempt": 1, "error": "real failure"}],
+        }
+        try:
+            with app_module.app.test_client() as client:
+                resp = client.post("/api/agent", json={"session": "test", "text": "画图"})
+        finally:
+            app_module.code_agent.is_available = original_available
+            app_module.code_agent.build_rf_plan = original_build
+            app_module.code_agent.generate_code = original_generate
+
+        self.assertEqual(200, resp.status_code)
+        payload = resp.get_json()
+        self.assertEqual(2, payload["retries"])
+        self.assertEqual([{"attempt": 1, "error": "real failure"}], payload["history"])
+
 
 class TestPlotCompatibility(unittest.TestCase):
     def test_demo_plot_functions_are_compatible_with_installed_plotly(self):
@@ -342,6 +396,37 @@ class TestNetworkInspector(unittest.TestCase):
         self.assertIn({"a": 0, "b": 1, "source": "matrix", "confidence": "high"}, pairs)
         self.assertIn({"a": 2, "b": 3, "source": "matrix", "confidence": "high"}, pairs)
 
+    def test_mixed_mode_uses_port_names_for_pn_pairs(self):
+        import network_inspector
+
+        ntwk = make_named_network(["J1_CH_P", "J1_CH_N", "J2_CH_P", "J2_CH_N"], z0=50)
+
+        mixed = network_inspector.detect_mixed_mode(ntwk)
+
+        self.assertEqual("ready", mixed["status"])
+        self.assertEqual([0, 1, 2, 3], mixed["se2gmm_order"])
+        self.assertEqual(
+            [{"ports": [0, 1], "p": 0, "n": 1, "source": "port_names", "confidence": "high"},
+             {"ports": [2, 3], "p": 2, "n": 3, "source": "port_names", "confidence": "high"}],
+            mixed["differential_pairs"],
+        )
+
+    def test_mixed_mode_matrix_only_requires_confirmation(self):
+        import network_inspector
+
+        ntwk = make_named_network(
+            ["Port1", "Port2", "Port3", "Port4"],
+            z0=50,
+            transmissions=[(0, 1, 0.8), (1, 0, 0.8), (2, 3, 0.75), (3, 2, 0.75)],
+        )
+
+        mixed = network_inspector.detect_mixed_mode(ntwk)
+
+        self.assertEqual("needs_confirmation", mixed["status"])
+        self.assertEqual([[0, 1], [2, 3]], mixed["through_paths"])
+        self.assertEqual([0, 2, 1, 3], mixed["alternatives"][0]["se2gmm_order"])
+        self.assertEqual([0, 3, 1, 2], mixed["alternatives"][1]["se2gmm_order"])
+
 
 class TestNetworkMetadataApi(unittest.TestCase):
     def test_list_networks_includes_inspection_metadata(self):
@@ -355,6 +440,7 @@ class TestNetworkMetadataApi(unittest.TestCase):
         entry = resp.get_json()["networks"]["fixture"]
         self.assertEqual("power", entry["network_kind"])
         self.assertEqual("zmag", entry["quick_actions"][0]["chart_type"])
+        self.assertIn("mixed_mode", entry)
 
     def test_zmag_chart_returns_impedance_magnitude(self):
         ntwk = make_named_network(["VDD", "GND"], z0=0.1)
@@ -398,6 +484,248 @@ class TestNetworkMetadataApi(unittest.TestCase):
             if os.path.exists(path):
                 os.unlink(path)
 
+    def test_agent_network_payload_includes_rf_metadata(self):
+        ntwk = make_named_network(
+            ["J1_NET_P", "J1_NET_N", "J2_NET_P", "J2_NET_N"],
+            z0=50,
+            transmissions=[(1, 0, 0.8), (0, 1, 0.8), (3, 2, 0.75), (2, 3, 0.75)],
+        )
+        register_network(ntwk)
+        entry = app_module.sessions["test"]["networks"]["fixture"]
+
+        payload = app_module._agent_network_payload(entry)
+
+        self.assertTrue(payload["loaded"])
+        self.assertEqual(4, payload["nports"])
+        self.assertEqual("signal", payload["network_kind"])
+        self.assertEqual(["J1_NET_P", "J1_NET_N", "J2_NET_P", "J2_NET_N"], payload["port_names"])
+        self.assertTrue(any(pair["a"] == 0 and pair["b"] == 2 for pair in payload["port_pairs"]))
+        self.assertTrue(any(action["id"] == "il" for action in payload["quick_actions"]))
+        self.assertEqual("ready", payload["mixed_mode"]["status"])
+        self.assertEqual([0, 1, 2, 3], payload["mixed_mode"]["se2gmm_order"])
+        self.assertEqual(16, payload["total_params"])
+        self.assertEqual(50.0, payload["z0"])
+
+    def test_agent_blocks_ambiguous_mixed_mode_until_pn_confirmed(self):
+        ntwk = make_named_network(
+            ["Port1", "Port2", "Port3", "Port4"],
+            z0=50,
+            transmissions=[(0, 1, 0.8), (1, 0, 0.8), (2, 3, 0.75), (3, 2, 0.75)],
+        )
+        register_network(ntwk)
+        original_available = app_module.code_agent.is_available
+        original_generate = app_module.code_agent.generate_code
+        app_module.code_agent.is_available = lambda: True
+        app_module.code_agent.generate_code = lambda *args, **kwargs: self.fail("ambiguous mixed-mode should not call LLM")
+        try:
+            with app_module.app.test_client() as client:
+                resp = client.post("/api/agent", json={"session": "test", "text": "转差分s参数画sdd11"})
+        finally:
+            app_module.code_agent.is_available = original_available
+            app_module.code_agent.generate_code = original_generate
+
+        self.assertEqual(200, resp.status_code)
+        payload = resp.get_json()
+        self.assertTrue(payload["needs_confirmation"])
+        self.assertIn("不能安全确定", payload["reply"])
+        self.assertEqual("needs_confirmation", payload["mixed_mode"]["status"])
+
+    def test_agent_accepts_user_confirmed_mixed_mode_pairs(self):
+        ntwk = make_named_network(
+            ["Port1", "Port2", "Port3", "Port4"],
+            z0=50,
+            transmissions=[(0, 1, 0.8), (1, 0, 0.8), (2, 3, 0.75), (3, 2, 0.75)],
+        )
+        register_network(ntwk)
+        captured = {}
+        original_available = app_module.code_agent.is_available
+        original_build = app_module.code_agent.build_rf_plan
+        original_generate = app_module.code_agent.generate_code
+        app_module.code_agent.is_available = lambda: True
+
+        def fake_build(*args, **kwargs):
+            return {
+                "ok": True,
+                "plan": {
+                    "schema_version": 1,
+                    "steps": [
+                        {"id": "s1", "op": "select", "inputs": ["network:fixture"], "args": {}},
+                        {"id": "s2", "op": "derive", "inputs": ["s1"], "args": {"kind": "custom"}},
+                    ],
+                    "output": {"kind": "text", "inputs": ["s2"], "chart_type": "db", "traces": []},
+                    "assumptions": [],
+                },
+                "history": [{"attempt": 1, "ok": True}],
+            }
+
+        def fake_generate(*args, **kwargs):
+            captured.update(kwargs)
+            return {
+                "code": "fig = None",
+                "validated": True,
+                "validation_msg": "OK",
+                "exec_result": {"ok": True, "figure_json": None, "stdout": ""},
+                "retries": 0,
+                "history": [],
+            }
+
+        app_module.code_agent.build_rf_plan = fake_build
+        app_module.code_agent.generate_code = fake_generate
+        try:
+            with app_module.app.test_client() as client:
+                resp = client.post("/api/agent", json={
+                    "session": "test",
+                    "text": "P/N 配对为 (1,3),(2,4)，转差分s参数画sdd11",
+                })
+        finally:
+            app_module.code_agent.is_available = original_available
+            app_module.code_agent.build_rf_plan = original_build
+            app_module.code_agent.generate_code = original_generate
+
+        self.assertEqual(200, resp.status_code)
+        mixed = captured["networks"]["fixture"]["mixed_mode"]
+        self.assertEqual("ready", mixed["status"])
+        self.assertEqual("user", mixed["source"])
+        self.assertEqual([0, 2, 1, 3], mixed["se2gmm_order"])
+        self.assertFalse(resp.get_json().get("needs_confirmation", False))
+
+    def test_agent_executes_simple_plot_plan_without_codegen(self):
+        register_network(make_network())
+        original_available = app_module.code_agent.is_available
+        original_build = app_module.code_agent.build_rf_plan
+        original_generate = app_module.code_agent.generate_code
+        app_module.code_agent.is_available = lambda: True
+        app_module.code_agent.build_rf_plan = lambda *args, **kwargs: {
+            "ok": True,
+            "plan": {
+                "schema_version": 1,
+                "steps": [{"id": "s1", "op": "select", "inputs": ["network:fixture"], "args": {}}],
+                "output": {
+                    "kind": "plot",
+                    "inputs": ["s1"],
+                    "chart_type": "db",
+                    "traces": [{"source": "s1", "param": "S2_1"}],
+                },
+                "assumptions": [],
+            },
+            "history": [{"attempt": 1, "ok": True}],
+        }
+        app_module.code_agent.generate_code = lambda *args, **kwargs: self.fail("deterministic plan should not call codegen")
+        try:
+            with app_module.app.test_client() as client:
+                resp = client.post("/api/agent", json={"session": "test", "text": "画 S21"})
+        finally:
+            app_module.code_agent.is_available = original_available
+            app_module.code_agent.build_rf_plan = original_build
+            app_module.code_agent.generate_code = original_generate
+
+        self.assertEqual(200, resp.status_code)
+        payload = resp.get_json()
+        self.assertEqual("agent_plan", payload["mode"])
+        self.assertTrue(payload["deterministic"])
+        self.assertNotIn("code", payload)
+        self.assertEqual(1, len(payload["results"][0]["chart"]["data"]))
+        self.assertIn("S2_1", payload["results"][0]["chart"]["data"][0]["name"])
+
+    def test_agent_executes_confirmed_mixed_mode_plan_without_codegen(self):
+        ntwk = make_named_network(
+            ["Port1", "Port2", "Port3", "Port4"],
+            z0=50,
+            transmissions=[(0, 1, 0.8), (1, 0, 0.8), (2, 3, 0.75), (3, 2, 0.75)],
+        )
+        register_network(ntwk)
+        original_available = app_module.code_agent.is_available
+        original_build = app_module.code_agent.build_rf_plan
+        original_generate = app_module.code_agent.generate_code
+        app_module.code_agent.is_available = lambda: True
+        app_module.code_agent.build_rf_plan = lambda *args, **kwargs: {
+            "ok": True,
+            "plan": {
+                "schema_version": 1,
+                "steps": [
+                    {"id": "s1", "op": "select", "inputs": ["network:fixture"], "args": {}},
+                    {"id": "s2", "op": "mixed_mode", "inputs": ["s1"], "args": {}},
+                ],
+                "output": {
+                    "kind": "plot",
+                    "inputs": ["s2"],
+                    "chart_type": "db",
+                    "traces": [{"source": "s2", "param": "SDD1_1"}],
+                },
+                "assumptions": [],
+            },
+            "history": [{"attempt": 1, "ok": True}],
+        }
+        app_module.code_agent.generate_code = lambda *args, **kwargs: self.fail("confirmed mixed-mode plot should not call codegen")
+        try:
+            with app_module.app.test_client() as client:
+                resp = client.post("/api/agent", json={
+                    "session": "test",
+                    "text": "P/N 配对为 (1,3),(2,4)，转差分s参数画sdd11",
+                })
+        finally:
+            app_module.code_agent.is_available = original_available
+            app_module.code_agent.build_rf_plan = original_build
+            app_module.code_agent.generate_code = original_generate
+
+        self.assertEqual(200, resp.status_code)
+        payload = resp.get_json()
+        self.assertEqual("agent_plan", payload["mode"])
+        self.assertTrue(payload["deterministic"])
+        chart = payload["results"][0]["chart"]
+        self.assertEqual(1, len(chart["data"]))
+        self.assertIn("SDD1_1", chart["data"][0]["name"])
+
+    def test_agent_falls_back_to_codegen_for_unsupported_plan_ops(self):
+        register_network(make_network())
+        captured = {}
+        original_available = app_module.code_agent.is_available
+        original_build = app_module.code_agent.build_rf_plan
+        original_generate = app_module.code_agent.generate_code
+        app_module.code_agent.is_available = lambda: True
+        plan = {
+            "schema_version": 1,
+            "steps": [
+                {"id": "s1", "op": "select", "inputs": ["network:fixture"], "args": {}},
+                {"id": "s2", "op": "derive", "inputs": ["s1"], "args": {"kind": "custom"}},
+            ],
+            "output": {"kind": "text", "inputs": ["s2"], "chart_type": "db", "traces": []},
+            "assumptions": [],
+        }
+        app_module.code_agent.build_rf_plan = lambda *args, **kwargs: {
+            "ok": True,
+            "plan": plan,
+            "history": [{"attempt": 1, "ok": True}],
+        }
+
+        def fake_generate(*args, **kwargs):
+            captured.update(kwargs)
+            return {
+                "code": "fig = None",
+                "validated": True,
+                "validation_msg": "OK",
+                "exec_result": {"ok": True, "figure_json": None, "stdout": ""},
+                "retries": 0,
+                "history": [],
+                "plan": kwargs["rf_plan"],
+                "planning_history": kwargs["planning_history"],
+            }
+
+        app_module.code_agent.generate_code = fake_generate
+        try:
+            with app_module.app.test_client() as client:
+                resp = client.post("/api/agent", json={"session": "test", "text": "做一个自定义派生指标"})
+        finally:
+            app_module.code_agent.is_available = original_available
+            app_module.code_agent.build_rf_plan = original_build
+            app_module.code_agent.generate_code = original_generate
+
+        self.assertEqual(200, resp.status_code)
+        payload = resp.get_json()
+        self.assertEqual("agent", payload["mode"])
+        self.assertEqual(plan, captured["rf_plan"])
+        self.assertEqual([{"attempt": 1, "ok": True}], captured["planning_history"])
+
     def test_dashboard_does_not_use_inner_html_for_user_strings(self):
         dashboard = os.path.join(ROOT, "scripts", "templates", "dashboard.html")
 
@@ -406,6 +734,103 @@ class TestNetworkMetadataApi(unittest.TestCase):
 
         self.assertNotIn("innerHTML", text)
         self.assertNotIn("insertAdjacentHTML", text)
+        self.assertNotIn("切到代码 Agent 试一下", text)
+        self.assertIn("规则聊天无法安全确定这个需求", text)
+
+
+class TestAgentPlan(unittest.TestCase):
+    def test_validate_plan_rejects_unknown_fields(self):
+        plan = {
+            "schema_version": 1,
+            "confidence": "high",
+            "steps": [{"id": "s1", "op": "select", "inputs": ["network:A"], "args": {}}],
+            "output": {"kind": "plot", "inputs": ["s1"], "chart_type": "db", "traces": [{"source": "s1", "param": "S2_1"}]},
+            "assumptions": [],
+        }
+
+        result = agent_plan.validate_plan(plan, {"A": {"nports": 2}}, "画 S21")
+
+        self.assertFalse(result.ok)
+        self.assertIn("未知", result.error)
+
+    def test_validate_plan_normalizes_and_accepts_ready_mixed_mode(self):
+        networks = {
+            "A": {
+                "nports": 4,
+                "mixed_mode": {"status": "ready", "pair_count": 2, "se2gmm_order": [0, 1, 2, 3]},
+            }
+        }
+        plan = {
+            "schema_version": 1,
+            "steps": [
+                {"id": "s1", "op": "select", "inputs": ["network:A"], "args": {}},
+                {"id": "s2", "op": "mixed_mode", "inputs": ["s1"], "args": {}},
+            ],
+            "output": {"kind": "plot", "inputs": ["s2"], "chart_type": "db", "traces": [{"source": "s2", "param": "SDD11"}]},
+            "assumptions": [],
+        }
+
+        result = agent_plan.validate_plan(plan, networks, "画 SDD11")
+
+        self.assertTrue(result.ok, result.error)
+        self.assertEqual("SDD1_1", result.plan["output"]["traces"][0]["param"])
+
+    def test_validate_plan_blocks_unconfirmed_mixed_mode(self):
+        networks = {
+            "A": {
+                "nports": 4,
+                "mixed_mode": {"status": "needs_confirmation", "pair_count": 2},
+            }
+        }
+        plan = {
+            "schema_version": 1,
+            "steps": [
+                {"id": "s1", "op": "select", "inputs": ["network:A"], "args": {}},
+                {"id": "s2", "op": "mixed_mode", "inputs": ["s1"], "args": {}},
+            ],
+            "output": {"kind": "plot", "inputs": ["s2"], "chart_type": "db", "traces": [{"source": "s2", "param": "SDD1_1"}]},
+            "assumptions": [],
+        }
+
+        result = agent_plan.validate_plan(plan, networks, "画 SDD11")
+
+        self.assertTrue(result.needs_confirmation)
+        self.assertIn("未确认", result.confirmation)
+
+    def test_validate_plan_rejects_trace_mismatch_with_explicit_user_param(self):
+        plan = {
+            "schema_version": 1,
+            "steps": [{"id": "s1", "op": "select", "inputs": ["network:A"], "args": {}}],
+            "output": {"kind": "plot", "inputs": ["s1"], "chart_type": "db", "traces": [{"source": "s1", "param": "S1_1"}]},
+            "assumptions": [],
+        }
+
+        result = agent_plan.validate_plan(plan, {"A": {"nports": 2}}, "只画 S21")
+
+        self.assertFalse(result.ok)
+        self.assertIn("不一致", result.error)
+
+    def test_build_rf_plan_uses_structured_plan_gate_without_real_llm(self):
+        original_call = code_agent._call_llm
+        code_agent._call_llm = lambda *args, **kwargs: """
+        {
+          "schema_version": 1,
+          "steps": [{"id": "s1", "op": "select", "inputs": ["network:A"], "args": {}}],
+          "output": {"kind": "plot", "inputs": ["s1"], "chart_type": "db", "traces": [{"source": "s1", "param": "S21"}]},
+          "assumptions": []
+        }
+        """
+        try:
+            result = code_agent.build_rf_plan(
+                "画 S21",
+                networks={"A": {"nports": 2}},
+                config={"api_key": "test", "base_url": "http://unused", "model": "fake", "timeout_sec": 1},
+            )
+        finally:
+            code_agent._call_llm = original_call
+
+        self.assertTrue(result["ok"], result)
+        self.assertEqual("S2_1", result["plan"]["output"]["traces"][0]["param"])
 
 
 class TestCodeValidator(unittest.TestCase):
@@ -453,6 +878,168 @@ class TestCodeValidator(unittest.TestCase):
                 ok, msg = code_agent.validate_code(code)
                 self.assertFalse(ok)
                 self.assertIn("Network", msg)
+
+    def test_matplotlib_style_plt_plot_is_rejected(self):
+        ok, msg = code_agent.validate_code("plt.plot([1], [2])\nfig = None")
+
+        self.assertFalse(ok)
+        self.assertIn("matplotlib", msg)
+
+    def test_code_semantics_rejects_sdd_without_mixed_mode_transform(self):
+        code = """
+import plotly.graph_objects as go
+ntwk = _nets["fixture"]
+fig = go.Figure()
+fig.add_trace(go.Scatter(x=ntwk.f/1e9, y=ntwk.s_db[:, 0, 0], name="SDD11"))
+"""
+        ok, msg = code_agent.validate_code_semantics(code, "画sdd11")
+
+        self.assertFalse(ok)
+        self.assertIn("se2gmm", msg)
+
+    def test_code_semantics_rejects_broad_port_loop_for_explicit_param(self):
+        code = """
+import plotly.graph_objects as go
+ntwk = _nets["fixture"]
+fig = go.Figure()
+for m in range(ntwk.nports):
+    fig.add_trace(go.Scatter(x=ntwk.f/1e9, y=ntwk.s_db[:, m, m]))
+"""
+        ok, msg = code_agent.validate_code_semantics(code, "只画 S21")
+
+        self.assertFalse(ok)
+        self.assertIn("遍历", msg)
+
+    def test_code_semantics_requires_renumber_for_nondefault_mixed_order(self):
+        code = """
+import plotly.graph_objects as go
+ntwk = _nets["fixture"]
+mm = ntwk.copy()
+mm.se2gmm(p=2)
+fig = go.Figure()
+fig.add_trace(go.Scatter(x=mm.f/1e9, y=mm.s_db[:, 0, 0], name="SDD11"))
+"""
+        networks = {
+            "fixture": {
+                "mixed_mode": {
+                    "status": "ready",
+                    "pair_count": 2,
+                    "se2gmm_order": [0, 2, 1, 3],
+                }
+            }
+        }
+
+        ok, msg = code_agent.validate_code_semantics(code, "画 SDD11", networks=networks)
+
+        self.assertFalse(ok)
+        self.assertIn("renumber", msg)
+
+    def test_code_semantics_accepts_renumber_for_nondefault_mixed_order(self):
+        code = """
+import plotly.graph_objects as go
+ntwk = _nets["fixture"]
+mixed = _meta["fixture"]["mixed_mode"]
+order = mixed["se2gmm_order"]
+mm = ntwk.copy()
+mm.renumber(order, list(range(len(order))))
+mm.se2gmm(p=mixed["pair_count"])
+fig = go.Figure()
+fig.add_trace(go.Scatter(x=mm.f/1e9, y=mm.s_db[:, 0, 0], name="SDD11"))
+"""
+        networks = {
+            "fixture": {
+                "mixed_mode": {
+                    "status": "ready",
+                    "pair_count": 2,
+                    "se2gmm_order": [0, 2, 1, 3],
+                }
+            }
+        }
+
+        ok, msg = code_agent.validate_code_semantics(code, "画 SDD11", networks=networks)
+
+        self.assertTrue(ok, msg)
+
+    def test_code_semantics_rejects_wrong_network_against_plan(self):
+        plan = {
+            "schema_version": 1,
+            "steps": [{"id": "s1", "op": "select", "inputs": ["network:A"], "args": {}}],
+            "output": {"kind": "plot", "inputs": ["s1"], "chart_type": "db", "traces": [{"source": "s1", "param": "S2_1"}]},
+            "assumptions": [],
+        }
+        code = """
+import plotly.graph_objects as go
+ntwk = _nets["B"]
+fig = go.Figure()
+fig.add_trace(go.Scatter(x=ntwk.f/1e9, y=ntwk.s_db[:, 1, 0], name="S21"))
+"""
+
+        ok, msg = code_agent.validate_code_semantics(code, "画 S21", plan=plan)
+
+        self.assertFalse(ok)
+        self.assertIn("Plan 指定的网络", msg)
+
+    def test_figure_semantics_rejects_trace_count_mismatch_against_plan(self):
+        plan = {
+            "schema_version": 1,
+            "steps": [{"id": "s1", "op": "select", "inputs": ["network:A"], "args": {}}],
+            "output": {"kind": "plot", "inputs": ["s1"], "chart_type": "db", "traces": [{"source": "s1", "param": "S2_1"}]},
+            "assumptions": [],
+        }
+        fig = {"data": [{"name": "S21"}, {"name": "S11"}], "layout": {}}
+
+        ok, msg = code_agent.validate_figure_semantics("画 S21", fig, plan=plan)
+
+        self.assertFalse(ok)
+        self.assertIn("Plan 期望", msg)
+
+    def test_figure_semantics_rejects_expanded_sdd_traces(self):
+        fig = {"data": [{"name": "SDD11"}, {"name": "SDD22"}], "layout": {}}
+
+        ok, msg = code_agent.validate_figure_semantics("画sdd11", fig, network_count=1)
+
+        self.assertFalse(ok)
+        self.assertIn("不要展开全部", msg)
+
+    def test_figure_semantics_allows_one_trace_per_network_for_compare(self):
+        fig = {"data": [{"name": "A SDD11"}, {"name": "B SDD11"}], "layout": {}}
+
+        ok, msg = code_agent.validate_figure_semantics("对比 A 和 B 的 sdd11", fig, network_count=2)
+
+        self.assertTrue(ok, msg)
+
+    def test_execute_code_loads_json_metadata_with_python_booleans(self):
+        code = """
+import plotly.graph_objects as go
+assert _meta["fixture"]["loaded"] is True
+assert _meta["fixture"]["optional"] is None
+fig = go.Figure()
+fig.add_trace(go.Scatter(x=[1], y=[2], name="ok"))
+"""
+        networks = {
+            "fixture": {
+                "path": "",
+                "loaded": True,
+                "optional": None,
+                "quick_actions": [{"id": "rl", "params": ["S1_1"]}],
+            }
+        }
+
+        result = code_agent.execute_code(code, networks=networks)
+
+        self.assertTrue(result["ok"], result.get("error"))
+        self.assertEqual(1, len(result["figure_json"]["data"]))
+
+    def test_agent_prompt_guides_sdd11_without_expanding_all_params(self):
+        prompt = code_agent._build_full_system_prompt()
+        constraints = code_agent._build_task_constraints("画sdd11")
+
+        self.assertIn("SDD11", prompt)
+        self.assertIn("se2gmm", prompt)
+        self.assertIn("se2gmm_order", prompt)
+        self.assertIn("只画指定参数", prompt)
+        self.assertIn("mm.s_db[:, 0, 0]", prompt)
+        self.assertIn("SDD11", constraints)
 
 
 class TestApiGraphDependency(unittest.TestCase):
